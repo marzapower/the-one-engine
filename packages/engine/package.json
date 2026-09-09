@@ -1,0 +1,52 @@
+{
+  "name": "the-one-engine",
+  "version": "0.1.0",
+  "description": "Headless incremental-game engine: producers, upgrades, prestiges, balance simulation and an addon SDK",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/marzapower/the-one-engine.git",
+    "directory": "packages/engine"
+  },
+  "homepage": "https://github.com/marzapower/the-one-engine#readme",
+  "bugs": {
+    "url": "https://github.com/marzapower/the-one-engine/issues"
+  },
+  "author": {
+    "name": "Daniele Di Bernardo",
+    "email": "daniele.dib@gmail.com"
+  },
+  "files": [
+    "dist"
+  ],
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./balance": {
+      "types": "./dist/balance/index.d.ts",
+      "import": "./dist/balance/index.js"
+    },
+    "./testing": {
+      "types": "./dist/testing/index.d.ts",
+      "import": "./dist/testing/index.js"
+    },
+    "./node": {
+      "types": "./dist/node.d.ts",
+      "import": "./dist/node.js"
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "bench": "tsx bench/engine.bench.ts"
+  },
+  "dependencies": {
+    "break_eternity.js": "^2.1.3",
+    "zod": "^4.3.6"
+  }
+}
