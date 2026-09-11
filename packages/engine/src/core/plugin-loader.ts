@@ -20,7 +20,7 @@ export async function applyPlugin(engine: Engine, plugin: Plugin): Promise<void>
 export async function loadPlugin(engine: Engine, url: string): Promise<void> {
   if (engine.plugins.has(url)) return;
 
-  const mod = (await import(/* @vite-ignore */ url)) as { default?: Plugin; applyPlugin?: Plugin };
+  const mod = (await import(/* @vite-ignore */ /* webpackIgnore: true */ /* turbopackIgnore: true */ url)) as { default?: Plugin; applyPlugin?: Plugin };
   const plugin = mod.default ?? mod.applyPlugin;
   if (typeof plugin !== "function") {
     throw new Error(`Plugin at ${url}: missing default export "(sdk) => void"`);
