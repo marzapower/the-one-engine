@@ -66,6 +66,9 @@ export class MetricsCollector {
   private lastPrestigeMs = 0;
   private prestigeCount = 0;
 
+  private clickCount = 0;
+  private lastClickMs: number | null = null;
+
   onSample(state: GameState, tSimMs: number): void {
     const primaryCurrency = state.currencies.find((c) => c.primary);
     const overflowCurrency = this.overflowCode === undefined ? undefined : state.currencies.find((c) => c.code === this.overflowCode);
@@ -119,6 +122,12 @@ export class MetricsCollector {
     }
   }
 
+  /** Records `count` manual taps at `tSimMs` (called by the harness — see `RunBalanceSimOptions.clickable`). */
+  onClick(tSimMs: number, count = 1): void {
+    this.clickCount += count;
+    this.lastClickMs = tSimMs;
+  }
+
   finalize(state: GameState, tSimMs: number): BalanceReport {
     if (this.currentDeadWindowStart !== null) {
       this.deadWindows.push({ fromMs: this.currentDeadWindowStart, toMs: tSimMs });
@@ -145,6 +154,7 @@ export class MetricsCollector {
       decisionDensity,
       purchaseRotation: { switches: this.rotationSwitches, perHour },
       prestigeCycles: this.prestigeCycles,
+      clicks: { count: this.clickCount, lastMs: this.lastClickMs },
       actionsCount: this.actionsCount,
       actions: this.actions,
     };

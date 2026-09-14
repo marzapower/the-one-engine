@@ -60,7 +60,32 @@ export interface GameDefinition {
   currencies: Currency[];
   prestiges: Prestige[];
   upgrades: DefinitionUpgrade[];
+  /** Always-present manual action (a "tap" that gives currency). Absent = defaults (see `resolveClickable`). */
+  clickable?: Clickable;
 }
+
+/** A manual click/tap: raw fields as authored, every one optional. See `resolveClickable` for the resolved form. */
+export interface Clickable {
+  /** Currency the tap gives. Defaults to the definition's primary currency. */
+  currencyCode?: string;
+  /** Amount added to the currency per tap. Default 1. */
+  gain?: number;
+  /** Minimum time between taps, in ms. Default 1000. Floor: `MIN_CLICK_COOLDOWN_MS`. */
+  cooldownMs?: number;
+}
+
+/** `Clickable` with every default resolved — what `runBalanceSim` actually consumes. */
+export interface ResolvedClickable {
+  currencyCode: string;
+  gain: number;
+  cooldownMs: number;
+}
+
+/** Defaults mirroring The One Incremental's tap: +1 `one`, 1000 ms cooldown. */
+export const DEFAULT_CLICKABLE: { gain: number; cooldownMs: number } = { gain: 1, cooldownMs: 1000 };
+
+/** Floor enforced on `Clickable.cooldownMs` — anything faster stops being a "manual" action. */
+export const MIN_CLICK_COOLDOWN_MS = 100;
 
 /**
  * Validates an untyped parsed JSON into a `GameDefinition`. Structural
@@ -93,7 +118,41 @@ export function parseGameDefinition(raw: unknown): GameDefinition {
     if (producer.resetsOn === undefined) fail(`producer "${producer.code}" missing resetsOn (${def.meta.id})`);
   }
 
+  if (def.clickable !== undefined) {
+    const { currencyCode, gain, cooldownMs } = def.clickable;
+    if (currencyCode !== undefined && !def.currencies.some((c) => c.code === currencyCode)) {
+      fail(`clickable.currencyCode "${currencyCode}" is not a currency of the definition (${def.meta.id})`);
+    }
+    if (gain !== undefined && (!Number.isFinite(gain) || gain <= 0)) {
+      fail(`clickable.gain must be a finite number > 0 (${def.meta.id})`);
+    }
+    if (cooldownMs !== undefined && (!Number.isFinite(cooldownMs) || cooldownMs < MIN_CLICK_COOLDOWN_MS)) {
+      fail(`clickable.cooldownMs must be a finite number >= ${MIN_CLICK_COOLDOWN_MS}ms (${def.meta.id})`);
+    }
+  }
+
   return def;
+}
+
+/**
+ * Resolves a definition's clickable to its always-usable form: defaults
+ * filled in, currency verified. `undefined` when the definition declares no
+ * primary currency, or `clickable.currencyCode` names a currency the
+ * definition does not carry — callers (the harness, via
+ * `RunBalanceSimOptions.clickable`) then simply never tap.
+ */
+export function resolveClickable(def: GameDefinition): ResolvedClickable | undefined {
+  const primary = def.currencies.find((c) => c.primary);
+  if (!primary) return undefined;
+
+  const currencyCode = def.clickable?.currencyCode ?? primary.code;
+  if (!def.currencies.some((c) => c.code === currencyCode)) return undefined;
+
+  return {
+    currencyCode,
+    gain: def.clickable?.gain ?? DEFAULT_CLICKABLE.gain,
+    cooldownMs: def.clickable?.cooldownMs ?? DEFAULT_CLICKABLE.cooldownMs,
+  };
 }
 
 /**

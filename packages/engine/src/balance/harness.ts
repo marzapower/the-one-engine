@@ -1,10 +1,11 @@
 import { silentLogger } from "../core/di/defaults";
 import { Engine } from "../core/engine";
-import { N, NR } from "../nums";
+import { type Decimal, N, NR } from "../nums";
 import type { GameState } from "../state";
 import { MockTimeProvider } from "../testing/MockTimeProvider";
+import type { ResolvedClickable } from "./definition";
 import { MetricsCollector } from "./metrics";
-import { findCostPool } from "./queries";
+import { findCostPool, nextUnitCost } from "./queries";
 import { DEFAULT_HARNESS_PARAMS } from "./types";
 import type { BalanceReport, BotIntent, BotPolicy, HarnessParams, SimAction } from "./types";
 
@@ -14,6 +15,15 @@ export interface RunBalanceSimOptions {
   params?: Partial<HarnessParams>;
   engine?: Engine;
   collector?: MetricsCollector;
+  /**
+   * Manual-tap parameters. Taps happen ONLY when this option is passed — a
+   * `GameDefinition.clickable` declared on the definition is not enough by
+   * itself: callers resolve it with `resolveClickable` (definition.ts) and
+   * pass the result explicitly. A tap adds `gain` raw to the currency's
+   * `amount` (no gainMult, no effects, no `earned`), like The One
+   * Incremental's `gameSlice` tap.
+   */
+  clickable?: ResolvedClickable;
 }
 
 /**
@@ -26,16 +36,22 @@ export function runBalanceSim(opts: RunBalanceSimOptions): BalanceReport {
   const params: HarnessParams = { ...DEFAULT_HARNESS_PARAMS, ...opts.params };
   const engine = opts.engine ?? new Engine(params.tickLengthMs, { time: new MockTimeProvider(params.tickLengthMs), logger: silentLogger });
   const collector = opts.collector ?? new MetricsCollector(engine);
-  const { state, bot } = opts;
+  const { state, bot, clickable } = opts;
 
   let droppedIntents = 0;
   let tSimMs = 0;
   let nextDecisionMs = 0;
+  let nextTapMs = 0;
 
   while (tSimMs < params.durationMs) {
     const chunk = Math.min(params.sampleIntervalMs, params.durationMs - tSimMs);
     engine.advance(state, chunk);
     tSimMs += chunk;
+
+    if (clickable) {
+      nextTapMs = applyTaps(state, engine, clickable, collector, tSimMs, chunk, nextTapMs);
+    }
+
     collector.onSample(state, tSimMs);
 
     if (tSimMs >= nextDecisionMs) {
@@ -63,6 +79,61 @@ export function runBalanceSim(opts: RunBalanceSimOptions): BalanceReport {
   report.meta.validationErrors = state.stats.validationErrors;
 
   return report;
+}
+
+/**
+ * Applies manual taps for the chunk that just ended at `tSimMs` (length
+ * `chunk`), per the "click only when stuck" rhythm, and returns the updated
+ * `nextTapMs`.
+ *
+ * Stuck (evaluated once per chunk, before tapping): the click's currency
+ * exists; at least one producer is priced in it; NONE of those producers'
+ * next single unit is affordable (`nextUnitCost`, same cost function
+ * `queries.ts` uses); AND that currency's `persecDelta` is <= 0. Upgrades and
+ * prestiges are ignored. A currency that can't be found never taps and never
+ * throws. If not stuck, `nextTapMs` is left untouched.
+ *
+ * Rhythm: a tap is "due" every `cooldownMs`. `nextTapMs` never accumulates a
+ * backlog across chunks — if it lags behind the start of this chunk it is
+ * pulled up to the chunk start first, so the first tap of a chunk is ready at
+ * the chunk's own start. The tap count for the chunk is then capped so the
+ * currency never overshoots past the cheapest blocking producer by more than
+ * one tap's worth (`ceil(minDeficit / gain)`, `minDeficit` = the smallest
+ * `nextUnitCost - currency.amount` across the blocking producers — positive
+ * by construction, since the currency is stuck).
+ */
+function applyTaps(state: GameState, engine: Engine, clickable: ResolvedClickable, collector: MetricsCollector, tSimMs: number, chunk: number, nextTapMs: number): number {
+  const currency = state.currencies.find((c) => c.code === clickable.currencyCode);
+  if (!currency) return nextTapMs;
+
+  const blockingProducers = state.producers.filter((p) => p.currencyCode === clickable.currencyCode);
+  if (blockingProducers.length === 0) return nextTapMs;
+
+  if (N(currency.persecDelta ?? 0).gt(0)) return nextTapMs;
+
+  let minDeficit: Decimal | null = null;
+  for (const producer of blockingProducers) {
+    const deficit = N(nextUnitCost(engine, producer)).sub(N(currency.amount));
+    if (deficit.lte(0)) return nextTapMs; // this producer is affordable — not stuck.
+    if (minDeficit === null || deficit.lt(minDeficit)) minDeficit = deficit;
+  }
+  if (minDeficit === null) return nextTapMs;
+
+  let updatedNextTapMs = nextTapMs;
+  if (updatedNextTapMs <= tSimMs - chunk) updatedNextTapMs = tSimMs - chunk;
+  if (updatedNextTapMs > tSimMs) return updatedNextTapMs;
+
+  const due = Math.floor((tSimMs - updatedNextTapMs) / clickable.cooldownMs) + 1;
+  const cap = Math.ceil(minDeficit.div(clickable.gain).toNumber());
+  // A non-numeric cost (NaN) must not poison the currency and the tap clock for the rest of the run.
+  if (Number.isNaN(cap)) return updatedNextTapMs;
+  const n = Math.min(due, cap);
+
+  currency.amount = NR(N(currency.amount).add(N(clickable.gain).mul(n)));
+  updatedNextTapMs += n * clickable.cooldownMs;
+  collector.onClick(tSimMs, n);
+
+  return updatedNextTapMs;
 }
 
 /**

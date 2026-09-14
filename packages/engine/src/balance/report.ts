@@ -56,6 +56,9 @@ export function formatReportSummary(report: BalanceReport): string {
   lines.push(`Purchase rotation: switches=${report.purchaseRotation.switches} perHour=${report.purchaseRotation.perHour.toFixed(2)}`);
   lines.push("");
 
+  lines.push(`Clicks: count=${report.clicks.count} last=${report.clicks.lastMs === null ? "—" : formatMs(report.clicks.lastMs)}`);
+  lines.push("");
+
   lines.push("Prestige cycles:");
   if (report.prestigeCycles.length === 0) {
     lines.push("  (none)");

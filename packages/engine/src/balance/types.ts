@@ -160,6 +160,8 @@ export interface BalanceReport {
   /** Attention-rotation proxy: number of times the purchased entity code changes between consecutive buy actions. */
   purchaseRotation: { switches: number; perHour: number };
   prestigeCycles: PrestigeCycle[];
+  /** Manual taps performed via `RunBalanceSimOptions.clickable` (zero when the option was not passed). */
+  clicks: { count: number; lastMs: number | null };
   /** Count of applied actions per entity code. */
   actionsCount: Record<string, number>;
   actions: SimAction[];
