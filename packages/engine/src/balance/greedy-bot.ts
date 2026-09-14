@@ -116,6 +116,7 @@ export class GreedyBot implements BotPolicy {
     const prestigeIntent = this.checkPrestigeRatio(engine, state);
     if (prestigeIntent) {
       this.lastActionTsSimMs = tSimMs;
+      this.resetProgressTracking(tSimMs);
       return [prestigeIntent];
     }
 
@@ -134,13 +135,27 @@ export class GreedyBot implements BotPolicy {
     if (tSimMs - this.lastProgressTsSimMs > this.options.stallPrestigeAfterMs) {
       const stallIntent = this.checkStallPrestige(engine, state);
       if (stallIntent) {
-        this.lastProgressTsSimMs = tSimMs;
-        this.peakPrimaryLog = 0;
+        this.resetProgressTracking(tSimMs);
         return [stallIntent];
       }
     }
 
     return [];
+  }
+
+  /**
+   * Resets the progress-tracking clock after ANY prestige (ratio-triggered
+   * or stall-triggered): a prestige resets the primary currency far below
+   * its pre-prestige peak, so the peak/clock must restart from here or the
+   * very next decision point sees "no progress since a peak I can no longer
+   * reach" and misfires the stall path for a near-worthless gain — turning a
+   * ratio prestige and its follow-up stall prestige into one artificially
+   * split payout instead of letting the primary climb properly before the
+   * next real prestige.
+   */
+  private resetProgressTracking(tSimMs: number): void {
+    this.peakPrimaryLog = 0;
+    this.lastProgressTsSimMs = tSimMs;
   }
 
   private checkPrestigeRatio(engine: Engine, state: GameState): BotIntent | null {

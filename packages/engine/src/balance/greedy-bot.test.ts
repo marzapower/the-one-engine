@@ -142,6 +142,52 @@ describe("GreedyBot", () => {
     expect(intents).toEqual([{ kind: "prestige", code: "convert" }]);
   });
 
+  it("does not misfire a worthless stall prestige right after a ratio-triggered prestige", () => {
+    // "convert" delivers gain = source primary amount 1:1, and drives a mult
+    // effect m = 1 + drive (steep, so a modest gain still clears the ratio
+    // bar via m'/m without needing an enormous absolute gain).
+    const prestige: Prestige = {
+      code: "convert",
+      currencyCode: "prestige",
+      source: { kind: "currency", code: "primary", path: "amount" },
+      target: { kind: "currency", code: "prestige", path: "amount" },
+      func: { base: NR(0), coeff: NR(1), func: ScalingMethod.Linear, scaleOn: ScaleOn.self },
+      effects: [
+        {
+          stage: 0,
+          target: { kind: "currency", code: "primary", path: "persecDelta" },
+          type: "mult",
+          func: { base: NR(1), coeff: NR(1), func: ScalingMethod.Linear, scaleOn: ScaleOn.self }, // 1 + 1*drive
+        },
+      ],
+    };
+
+    const bot = new GreedyBot({ stallPrestigeAfterMs: 5_000 });
+
+    // Call 1: primary is high, ratio prestige clears (m=1+10=11, m'=1+1010=1011, ratio≈92).
+    // This also seeds the progress peak at log10(1000) = 3.
+    const stateBeforePrestige = baseState({
+      currencies: [currency("primary", 1000, 10), currency("prestige", 10)],
+      prestiges: [prestige],
+    });
+    const firstIntents = bot.decide(ctxFor(stateBeforePrestige, 0));
+    expect(firstIntents).toEqual([{ kind: "prestige", code: "convert" }]);
+
+    // Call 2, just past stallPrestigeAfterMs: the ratio prestige reset primary
+    // far below the recorded peak (5 << 1000), so with the bug the stale
+    // peak/clock reads as "no progress for stallPrestigeAfterMs" and misfires
+    // a near-worthless stall prestige (gain=5) — even though the ratio bar
+    // itself correctly does NOT clear here (driveBefore=1010 is already
+    // huge, so m'/m ≈ 1016/1011 << 1.5).
+    const stateAfterPrestige = baseState({
+      currencies: [currency("primary", 5, 10), currency("prestige", 1010)],
+      prestiges: [prestige],
+    });
+    const secondIntents = bot.decide(ctxFor(stateAfterPrestige, 5_001));
+
+    expect(secondIntents).toEqual([]);
+  });
+
   it("does not trigger prestige when the ratio bar isn't cleared, and buys instead", () => {
     const prestige: Prestige = {
       code: "convert",
