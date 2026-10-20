@@ -1,4 +1,12 @@
+import { TICK_MS_INTERVAL } from "../constants";
 import type { Numerus } from "../nums";
+
+/** Tick length `simulateOffline` uses for a given duration: full fidelity under 1 min, 250ms under 1h, 1000ms beyond. */
+export function offlineTickLength(durationMs: number): number {
+  if (durationMs < 60_000) return TICK_MS_INTERVAL;
+  if (durationMs < 3_600_000) return 250;
+  return 1000;
+}
 
 /**
  * Report from `Engine.simulateOffline`: what an offline stretch produced.

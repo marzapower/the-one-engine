@@ -1,7 +1,7 @@
 // ============================================================================
 // Engine
 // ============================================================================
-export { Engine } from "./core/engine";
+export { Engine, type TickResult } from "./core/engine";
 
 // ============================================================================
 // SDK & plugins
@@ -64,7 +64,7 @@ export { createInitialState } from "./state";
 // ============================================================================
 // Constants
 // ============================================================================
-export { DESIRED_FPS, TICK_MS_INTERVAL, MOVING_AVG_WINDOW, ZERO } from "./constants";
+export { DESIRED_FPS, TICK_MS_INTERVAL, MOVING_AVG_WINDOW, ZERO, MAX_CATCHUP_MS_PER_TICK, MAX_OFFLINE_MS } from "./constants";
 
 // ============================================================================
 // Dependency injection: types and defaults
@@ -96,6 +96,7 @@ export { collectModifiers, applyModifiers, isTransientTargetPath, type Modifier 
 // Offline simulation
 // ============================================================================
 export type { OfflineReport } from "./core/offline";
+export { offlineTickLength } from "./core/offline";
 
 // ============================================================================
 // Validation

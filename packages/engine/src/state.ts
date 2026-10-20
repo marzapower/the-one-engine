@@ -32,7 +32,9 @@ export interface EngineStats {
   ticks: number;
   lastTicks: number[];
   movingAvgTime: number;
+  /** `tick()` calls that ran no step (less than one step of backlog). */
   fastSkippedFrames: number;
+  /** `tick()` calls whose backlog exceeded the budget, so part of it was deferred to later calls. */
   slowSkippedFrames: number;
   lastCallTimes: [string, number][];
   stageMetrics: Record<string, StageMetrics>;
@@ -52,7 +54,14 @@ export interface EngineStats {
  */
 export interface GameState {
   stats: EngineStats;
+  /**
+   * Game clock cursor: the wall-clock time up to which the simulation has been
+   * played. `now - lastTick` is the backlog still owed. `undefined` means the
+   * clock is not started (the first `tick()` plays one step and sets it).
+   */
   lastTick: number | undefined;
+  /** Wall-clock time at which the clock was paused (`pauseClock`); `undefined` when running. While set, `tick()` does nothing. */
+  pausedAt?: number;
   producers: Producer[];
   upgrades: Upgrade[];
   currencies: Currency[];

@@ -264,6 +264,7 @@ export const StatsSchema = z.object({
 export const GameStateSchema = z.object({
   stats: StatsSchema.passthrough(),
   lastTick: z.number().optional(),
+  pausedAt: z.number().optional(),
   producers: z.array(ProducerSchema),
   upgrades: z.array(UpgradeSchema),
   currencies: z.array(CurrencySchema),

@@ -68,11 +68,16 @@ console.log(N(gold.amount).gt(50)); // true
 
 ### The tick loop
 
-`engine.tick(state)` is what a real game calls from its interval: it measures
-the wall-clock time that passed, runs as many sub-ticks as needed to catch up
-(a browser throttling the tab to one tick per second included), and keeps
-per-stage timing in `state.stats`. `engine.advance(state, ms)` is the same
-loop without a clock, for tests and simulations.
+`engine.tick(state)` is what a real game calls from its interval. The
+simulation always advances in fixed steps of `tickLength`: `tick` plays the
+backlog `now - lastTick` step by step, up to a budget of game time per call
+(`budgetMs`, default `MAX_CATCHUP_MS_PER_TICK` = 60 s; if the step is larger
+than the budget, one step runs per call). What is not played stays pending in
+`lastTick` and is returned as `pendingMs`, so nothing is silently dropped;
+`backlogMs`, `consumeBacklog`, `pauseClock` and `resumeClock` let a host show,
+discard or freeze that debt. It also keeps per-stage timing in `state.stats`.
+`engine.advance(state, ms)` is the same loop without a clock, for tests and
+simulations.
 
 Each tick runs seven stages in a fixed order: upgrades at stage 0, production,
 upgrades at stage 1, prestige effects, growth, upgrades at stage 2, automation.

@@ -1,4 +1,4 @@
-import { MOVING_AVG_WINDOW, TICK_MS_INTERVAL } from "../constants";
+import { MAX_CATCHUP_MS_PER_TICK, MAX_OFFLINE_MS, MOVING_AVG_WINDOW, TICK_MS_INTERVAL } from "../constants";
 import type { Buyable, Currency, Effect, GrowthFunction, Prestige, Producer, Upgrade } from "../models/base";
 import { type Decimal, type GenericNumberInput, N, NR, type Numerus } from "../nums";
 import { type GameState, type StageMetrics } from "../state";
@@ -7,7 +7,7 @@ import { DefaultEffectResolver, DefaultEntityRegistry, DefaultStateAdapter, Defa
 import type { EffectResolver, EngineDependencies, EngineServices, Logger, TimeProvider } from "./di/types";
 import { computeGrowthFunction } from "./growth";
 import { type Modifier, applyModifiers, collectModifiers, isTransientTargetPath } from "./modifiers";
-import type { OfflineReport } from "./offline";
+import { type OfflineReport, offlineTickLength } from "./offline";
 import { deliveredPrestigeGain, prestigeDrive, prestigeGainMultiplier } from "./prestige-gain";
 import { costToBuy, costToBuyNext, maxBuyableAmount } from "./pricing";
 import { EffectRegistry } from "./registries/effect";
@@ -15,6 +15,13 @@ import { GrowthRegistry } from "./registries/growth";
 import { StageRegistry } from "./registries/stage";
 import { capacityPush, dragFactor as computeDragFactor, supportRatio as computeSupportRatio, coolingDelta } from "./saturation";
 import { validateBootstrap } from "./validation";
+
+/** Outcome of `Engine.tick`: game ms played this call, and backlog still owed. */
+export type TickResult = { processedMs: number; pendingMs: number };
+
+function assertPositiveFinite(value: number, name: string): void {
+  if (!Number.isFinite(value) || value <= 0) throw new RangeError(`${name} must be a finite number > 0, got ${value}`);
+}
 
 /**
  * The engine facade: owns the per-instance registries, the tick pipeline and
@@ -39,6 +46,7 @@ export class Engine {
   private validated = false;
 
   constructor(tickLength = TICK_MS_INTERVAL, deps?: EngineDependencies) {
+    assertPositiveFinite(tickLength, "tickLength");
     this.tickLength = tickLength;
     this.time = deps?.time ?? new DefaultTimeProvider(tickLength);
     this.logger = deps?.logger ?? consoleLogger;
@@ -56,45 +64,90 @@ export class Engine {
   }
 
   public setTickLength(ms: number): void {
+    assertPositiveFinite(ms, "tickLength");
     this.tickLength = ms;
     this.time.setTickLength(ms);
   }
 
   /**
-   * Runs as many ticks as `tickLength` demands to catch up with the wall
-   * clock, skipping too-short intervals and clamping too-long ones so a
-   * backgrounded tab does not simulate a huge jump in one step.
+   * Plays the backlog `now - lastTick` in fixed steps of `tickLength`, so the
+   * simulation never sees a variable step. At most `budgetMs` of game time is
+   * played per call (default `MAX_CATCHUP_MS_PER_TICK`); the remainder stays
+   * pending in `lastTick` and is reported as `pendingMs`. A sub-step residue
+   * also stays pending. If `tickLength > budgetMs`, one step runs per call.
+   * Does nothing while the clock is paused. With `lastTick` undefined it plays
+   * one step and starts the clock.
    */
-  public tick(state: GameState): void {
+  public tick(state: GameState, options?: { budgetMs?: number }): TickResult {
+    if (state.pausedAt !== undefined) return { processedMs: 0, pendingMs: 0 };
     this.ensureValidated(state);
-    const start = this.time.now();
-    let now = start;
 
-    const ticksToRun = Math.round(this.tickLength / TICK_MS_INTERVAL);
-    let elapsed = state.lastTick ? now - state.lastTick : TICK_MS_INTERVAL;
+    const budgetMs = options?.budgetMs ?? MAX_CATCHUP_MS_PER_TICK;
+    assertPositiveFinite(budgetMs, "budgetMs");
 
-    if (elapsed < this.tickLength / 2) {
-      state.stats.fastSkippedFrames++;
-      return;
-    }
+    const step = this.tickLength;
+    const now = this.time.now();
 
-    if (elapsed > 2 * this.tickLength) {
-      state.stats.slowSkippedFrames++;
-      elapsed = TICK_MS_INTERVAL;
-    }
-
-    for (let i = 0; i < ticksToRun; i++) {
-      elapsed = state.lastTick ? now - state.lastTick : TICK_MS_INTERVAL;
-      this.singleTick(state, elapsed);
+    if (state.lastTick === undefined) {
+      this.singleTick(state, step);
       state.lastTick = now;
-      if (i > 0) now += TICK_MS_INTERVAL;
+      return { processedMs: step, pendingMs: 0 };
     }
 
-    const diff = this.time.now() - start;
+    const backlog = now - state.lastTick;
+    if (backlog < 0) {
+      state.lastTick = now;
+      state.stats.fastSkippedFrames++;
+      return { processedMs: 0, pendingMs: 0 };
+    }
+
+    const due = Math.floor(backlog / step + 1e-6);
+    if (due === 0) {
+      state.stats.fastSkippedFrames++;
+      return { processedMs: 0, pendingMs: backlog };
+    }
+
+    const budget = Math.max(1, Math.floor(budgetMs / step + 1e-6));
+    const steps = Math.min(due, budget);
+    if (due > budget) state.stats.slowSkippedFrames++;
+
+    for (let i = 0; i < steps; i++) this.singleTick(state, step);
+    state.lastTick += steps * step;
+
+    const diff = this.time.now() - now;
     state.stats.totalTime += diff;
     state.stats.avgTime = state.stats.totalTime / state.stats.ticks;
-    state.stats.minTime = Math.min(state.stats.minTime, diff / ticksToRun);
-    state.stats.maxTime = Math.max(state.stats.maxTime, diff / ticksToRun);
+    state.stats.minTime = Math.min(state.stats.minTime, diff / steps);
+    state.stats.maxTime = Math.max(state.stats.maxTime, diff / steps);
+
+    return { processedMs: steps * step, pendingMs: Math.max(0, now - state.lastTick) };
+  }
+
+  /** Game time owed to the simulation: `now - lastTick`. 0 when the clock is not started or paused; never negative. */
+  public backlogMs(state: GameState): number {
+    if (state.lastTick === undefined || state.pausedAt !== undefined) return 0;
+    return Math.max(0, this.time.now() - state.lastTick);
+  }
+
+  /** Freezes the clock: `tick()` and `simulateOffline()` do nothing until `resumeClock`. No-op if already paused. */
+  public pauseClock(state: GameState): void {
+    if (state.pausedAt === undefined) state.pausedAt = this.time.now();
+  }
+
+  /** Unfreezes the clock, shifting `lastTick` by the paused time so the pause creates no backlog. No-op if not paused. */
+  public resumeClock(state: GameState): void {
+    if (state.pausedAt === undefined) return;
+    if (state.lastTick !== undefined) state.lastTick += this.time.now() - state.pausedAt;
+    state.pausedAt = undefined;
+  }
+
+  /** Drops up to `ms` of backlog without simulating it. Returns the ms dropped; 0 when paused or the clock is not started. */
+  public consumeBacklog(state: GameState, ms: number): number {
+    if (!Number.isFinite(ms)) throw new RangeError(`ms must be a finite number, got ${ms}`);
+    if (state.lastTick === undefined || state.pausedAt !== undefined) return 0;
+    const consumed = Math.min(Math.max(ms, 0), this.backlogMs(state));
+    state.lastTick += consumed;
+    return consumed;
   }
 
   /**
@@ -117,23 +170,23 @@ export class Engine {
    * Simulates offline progression with an adaptive coarse-tick strategy (see
    * `OfflineReport`). Requires a deterministic `TimeProvider` for accurate
    * timing; with the default wall-clock provider, state progression is
-   * best-effort.
+   * best-effort. Does nothing (zero report) while the clock is paused.
+   * `tickLengthMs` overrides the step (default `offlineTickLength`);
+   * `preserveClock` restores `state.lastTick` afterwards, so real time elapsed
+   * meanwhile stays pending.
    */
-  public simulateOffline(state: GameState, elapsedMs: number): OfflineReport {
+  public simulateOffline(state: GameState, elapsedMs: number, options?: { tickLengthMs?: number; preserveClock?: boolean }): OfflineReport {
     const startedAt = this.time.now();
 
-    const maxOfflineMs = 24 * 60 * 60 * 1000;
-    const durationCapped = elapsedMs >= maxOfflineMs;
-    const durationMs = Math.min(elapsedMs, maxOfflineMs);
+    const durationCapped = elapsedMs >= MAX_OFFLINE_MS;
+    const requestedMs = Math.min(elapsedMs, MAX_OFFLINE_MS);
+    const tickLengthUsed = options?.tickLengthMs ?? offlineTickLength(requestedMs);
+    assertPositiveFinite(tickLengthUsed, "tickLengthMs");
 
-    let tickLengthUsed: number;
-    if (durationMs < 60 * 1000) {
-      tickLengthUsed = TICK_MS_INTERVAL;
-    } else if (durationMs < 60 * 60 * 1000) {
-      tickLengthUsed = 250;
-    } else {
-      tickLengthUsed = 1000;
+    if (state.pausedAt !== undefined) {
+      return { durationMs: 0, durationRequestedMs: elapsedMs, durationCapped: false, tickLengthUsed, ticksRun: 0, deltaCurrencies: {}, startedAt, finishedAt: this.time.now() };
     }
+    const durationMs = requestedMs;
 
     const initialCurrencies: Record<string, Numerus> = {};
     const currencies = this.services.adapter.getCurrencies(state);
@@ -142,9 +195,14 @@ export class Engine {
     }
 
     const originalTickLength = this.tickLength;
+    const originalLastTick = state.lastTick;
     this.setTickLength(tickLengthUsed);
-    this.advance(state, durationMs);
-    this.setTickLength(originalTickLength);
+    try {
+      this.advance(state, durationMs);
+    } finally {
+      this.setTickLength(originalTickLength);
+      if (options?.preserveClock) state.lastTick = originalLastTick;
+    }
 
     const deltaCurrencies: Record<string, Numerus> = {};
     for (const curr of currencies) {

@@ -11,8 +11,13 @@ export class DefaultTimeProvider implements TimeProvider {
     this.tickLength = tickLength;
   }
 
+  /**
+   * Monotonic, small-magnitude clock (ms since page/process start). A Unix
+   * timestamp (~1.8e12) would make `lastTick += steps * step` lose time to
+   * rounding, so `Date.now()` is only the last resort.
+   */
   now(): number {
-    const perf = typeof window !== "undefined" && "performance" in window ? window.performance : undefined;
+    const perf = (typeof window !== "undefined" && "performance" in window ? window.performance : undefined) ?? globalThis.performance;
     return perf && typeof perf.now === "function" ? perf.now() : Date.now();
   }
 
