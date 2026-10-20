@@ -1,0 +1,100 @@
+{
+  "status": "Predisposto per un futuro sito di The One Engine: nessuna di queste pagine esiste ancora. Il manuale oggi vive su https://www.theoneincremental.com/docs (canonical lì finché il sito non esiste).",
+  "keywords": [
+    "typescript idle game engine",
+    "incremental game engine",
+    "headless game economy engine",
+    "open source idle game engine",
+    "typescript incremental game tutorial",
+    "incremental game big numbers",
+    "idle game prestige system typescript",
+    "incremental game cost formulas",
+    "idle game simulation library",
+    "incremental game engine plugins",
+    "The One Engine",
+    "typescript game economy testing"
+  ],
+  "pages": [
+    {
+      "path": "/",
+      "title": "The One Engine — TypeScript Idle Game Engine",
+      "description": "Build incremental game economies with a headless TypeScript engine. Use big numbers, prestige, plugins and balance simulation. MIT licensed.",
+      "ogTitle": "The One Engine — TypeScript Idle Game Engine",
+      "ogSubtitle": "Your game economy, powered by plain data.",
+      "index": true,
+      "jsonLd": "SoftwareSourceCode",
+      "ogImage": "seo/og/index.jpg"
+    },
+    {
+      "path": "/docs",
+      "title": "Incremental Game Engine Manual | The One Engine",
+      "description": "Learn how The One Engine models game economies, advances time and supports custom mechanics. Start with the manual and explore each system.",
+      "ogTitle": "Incremental Game Engine Manual | The One Engine",
+      "ogSubtitle": "Understand the engine behind your incremental game.",
+      "index": true,
+      "jsonLd": "TechArticle",
+      "ogImage": "seo/og/docs.jpg"
+    },
+    {
+      "path": "/api",
+      "title": "Engine & SDK API Reference | The One Engine",
+      "description": "Look up TypeScript APIs for game state, growth curves, prestige, simulation and engine extensions in The One Engine.",
+      "ogTitle": "Engine & SDK API Reference | The One Engine",
+      "ogSubtitle": "Connect your game to the Engine and SDK APIs.",
+      "index": true,
+      "jsonLd": "TechArticle",
+      "ogImage": "seo/og/api.jpg"
+    },
+    {
+      "path": "/balance-lab",
+      "title": "Idle Game Balance Simulation | The One Engine",
+      "description": "Simulate incremental economies with The One Engine. Inspect prestige timing, dead time and progression metrics with the balance toolkit.",
+      "ogTitle": "Idle Game Balance Simulation | The One Engine",
+      "ogSubtitle": "Measure progression before people play.",
+      "index": true,
+      "jsonLd": "TechArticle",
+      "ogImage": "seo/og/balance-lab.jpg"
+    },
+    {
+      "path": "/plugins",
+      "title": "Plugins & Addons for Idle Games | The One Engine",
+      "description": "Extend The One Engine with custom growth curves, effects and tick stages. Learn to package addons as plugins and content as JSON data packs.",
+      "ogTitle": "Plugins & Addons for Idle Games | The One Engine",
+      "ogSubtitle": "Extend the rules. Reuse your mechanics.",
+      "index": true,
+      "jsonLd": "TechArticle",
+      "ogImage": "seo/og/plugins.jpg"
+    },
+    {
+      "path": "/getting-started",
+      "title": "Build Your First Economy | The One Engine",
+      "description": "Set up The One Engine from source, define a currency and producer, then advance your first incremental game simulation in TypeScript.",
+      "ogTitle": "Build Your First Economy | The One Engine",
+      "ogSubtitle": "From a currency and producer to a running simulation.",
+      "index": true,
+      "jsonLd": "TechArticle",
+      "ogImage": "seo/og/getting-started.jpg"
+    }
+  ],
+  "npm": {
+    "description": "Headless TypeScript engine for incremental games: big numbers, producers, upgrades, prestige, plugins and economy balance simulation.",
+    "keywords": ["incremental-game", "idle-game", "game-engine", "typescript", "headless", "game-economy", "prestige", "big-numbers", "simulation", "game-balancing", "plugins"]
+  },
+  "github": {
+    "about": "Headless TypeScript engine for incremental games. Big numbers, prestige, plugins and balance simulation. MIT licensed.",
+    "topics": [
+      "incremental-game",
+      "idle-game",
+      "game-engine",
+      "typescript",
+      "headless",
+      "game-economy",
+      "prestige",
+      "big-numbers",
+      "simulation",
+      "game-balancing",
+      "plugins",
+      "mit-license"
+    ]
+  }
+}

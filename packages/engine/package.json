@@ -1,7 +1,20 @@
 {
   "name": "the-one-engine",
   "version": "0.1.0",
-  "description": "Headless incremental-game engine: producers, upgrades, prestiges, balance simulation and an addon SDK",
+  "description": "Headless TypeScript engine for incremental games: big numbers, producers, upgrades, prestige, plugins and economy balance simulation.",
+  "keywords": [
+    "incremental-game",
+    "idle-game",
+    "game-engine",
+    "typescript",
+    "headless",
+    "game-economy",
+    "prestige",
+    "big-numbers",
+    "simulation",
+    "game-balancing",
+    "plugins"
+  ],
   "type": "module",
   "license": "MIT",
   "repository": {

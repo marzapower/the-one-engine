@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset=".github/brand/engine.svg">
+    <img src=".github/brand/engine-day.svg" alt="The One Engine" width="220">
+  </picture>
+</p>
+
 # The One Engine
 
 A headless engine for incremental games, written in TypeScript. It runs the
