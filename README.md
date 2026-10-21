@@ -18,6 +18,11 @@ Runtime dependencies: [break_eternity.js](https://github.com/Patashu/break_etern
 for numbers up to 10^^1.8e308, and [zod](https://zod.dev) for validation.
 Nothing else. MIT licensed.
 
+Website and manual: [theoneincremental.com/engine](https://www.theoneincremental.com/engine).
+The engine runs [The One Incremental](https://www.theoneincremental.com), a free
+browser game, and [The One Builder](https://builder.theoneincremental.com), a
+workshop for designing and simulating incremental economies.
+
 ## The whole idea in one minute
 
 - **The game is data.** Producers, currencies, upgrades and prestiges are plain
@@ -125,11 +130,13 @@ optional offset, and a shape id looked up in the engine's growth registry.
 `scaleOn` decides whether x is the number you already own (`self`) or the
 count of another entity (`other`), which swaps the roles of b and x.
 
-The first four shapes have closed-form sums, so "buy 250" and "how many can I
-afford" are one formula each, guarded against the cases where formulas lie.
+Linear, geometric and exponential have algebraic sums, so quoting "buy 250"
+or "how many can I afford" costs one formula each, guarded against the cases
+where formulas lie. Double exponential uses bounded sums and checked
+estimates; logarithmic is meant for conversions and has no sum.
 `engine.costToBuy(item, pool)` quotes the maximum you can afford,
 `engine.maxBuyableAmount` returns just the amount, `engine.costToBuyNext(item, n)`
-prices an explicit amount.
+prices an explicit amount. These are quotes: your host applies the purchase.
 
 ### Effects that compose without drifting
 
@@ -152,8 +159,9 @@ tells you what it would deliver, for a preview panel.
 A producer may declare a `capacity`; the state may declare
 `rules.saturation`. With both present, output above capacity loses efficiency
 on a smooth curve, the lost output can overflow into a currency, that currency
-can drag every producer and cool down on a real-time half-life, the whole
-mechanic can stay dormant until a lifetime counter crosses a gate, and every
+can drag every producer and cool down on a real-time half-life, the capacity
+losses and the overflow can stay dormant until a lifetime counter crosses a
+gate (drag and cooling, when configured, do not wait for it), and every
 capacity can grow as that counter grows. `engine.saturationActive(state)` and
 `engine.supportRatio(state, producer)` are the read side for a UI.
 
@@ -168,16 +176,17 @@ automation stage, in that order.
 
 ### Offline progress that runs the real rules
 
-`engine.simulateOffline(state, elapsedMs)` runs real ticks at a coarser step
-(capped at 24 hours) so every feedback loop of the game happens offline the
-way it happens online. It returns the delta of every currency.
+`engine.simulateOffline(state, elapsedMs)` runs the same pipeline at a
+coarser, configurable step (capped at 24 hours), so the game's feedback loops
+keep running offline. Coarser steps can change numerical results and
+automation frequency. It returns the delta of every currency.
 
 ### Numbers past 1e308
 
 `N(x)` turns a number, a numeric string, a stored value or a `Decimal` into a
 `Decimal` you can chain. `NR(x)` turns the same inputs into the flat
 `{ sign, layer, mag }` object that belongs in state and save files. `N()` is
-strict: it throws on anything it cannot parse instead of silently returning
+strict: it throws on most input it cannot parse instead of silently returning
 zero. `print()` and `printF()` format for display, up to `(10^)^9 10.00`.
 
 ### Validation at bootstrap
@@ -186,13 +195,15 @@ The first tick validates the whole state: duplicate codes, dangling
 references, unresolvable paths, price curves out of their shape's domain,
 unknown growth or effect ids, behaviors and rules pointing at things that do
 not exist. Errors and warnings land in `state.stats` and in the engine's
-`Logger`; the game keeps running. Zod schemas validate the shape of a state or
-of a data pack without throwing.
+`Logger`; the game keeps running. Zod schemas validate the shape of a state and
+the envelope of a data pack without throwing; validate a pack's payload
+yourself before merging it.
 
 ### An SDK for addons, bound to one engine
 
-Every `Engine` owns its growth, effect-type and stage registries; two engines
-in the same process share nothing. `createSdk(engine)` hands a plugin
+Every `Engine` creates its own growth, effect-type and stage registries by
+default; injected registries can be shared on purpose, and built-in growth and
+effect definitions should be treated as immutable. `createSdk(engine)` hands a plugin
 `registerGrowth`, `registerEffectType`, `registerStage` bound to that engine,
 plus the numeric and schema helpers. `loadPlugin(engine, url)` dynamically
 imports an ES module and applies its default export, once per engine and URL.
