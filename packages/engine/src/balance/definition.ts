@@ -88,53 +88,6 @@ export const DEFAULT_CLICKABLE: { gain: number; cooldownMs: number } = { gain: 1
 export const MIN_CLICK_COOLDOWN_MS = 100;
 
 /**
- * Validates an untyped parsed JSON into a `GameDefinition`. Structural
- * checks only (presence + referential sanity), not a full schema: the
- * engine's own validation (`validation.ts`) covers state-level invariants
- * once the definition is loaded.
- */
-export function parseGameDefinition(raw: unknown): GameDefinition {
-  const fail = (msg: string): never => {
-    throw new Error(`Invalid game definition: ${msg}`);
-  };
-
-  if (typeof raw !== "object" || raw === null) fail("not an object");
-  const def = raw as GameDefinition;
-
-  if (!def.meta?.id || typeof def.meta.id !== "string") fail("meta.id missing");
-  if (typeof def.meta.version !== "number") fail(`meta.version missing (${def.meta.id})`);
-
-  for (const key of ["producers", "currencies", "prestiges", "upgrades"] as const) {
-    if (!Array.isArray(def[key])) fail(`${key} is not an array (${def.meta.id})`);
-  }
-
-  const primaries = def.currencies.filter((c) => c.primary);
-  if (primaries.length !== 1) {
-    fail(`exactly one currency must declare "primary: true" (found ${primaries.length}) — it anchors the balance value model (${def.meta.id})`);
-  }
-  for (const producer of def.producers) {
-    if (!producer.code) fail(`producer without code (${def.meta.id})`);
-    if (producer.currencyCode === undefined) fail(`producer "${producer.code}" missing currencyCode — definitions carry bootstrap defaults explicitly (${def.meta.id})`);
-    if (producer.resetsOn === undefined) fail(`producer "${producer.code}" missing resetsOn (${def.meta.id})`);
-  }
-
-  if (def.clickable !== undefined) {
-    const { currencyCode, gain, cooldownMs } = def.clickable;
-    if (currencyCode !== undefined && !def.currencies.some((c) => c.code === currencyCode)) {
-      fail(`clickable.currencyCode "${currencyCode}" is not a currency of the definition (${def.meta.id})`);
-    }
-    if (gain !== undefined && (!Number.isFinite(gain) || gain <= 0)) {
-      fail(`clickable.gain must be a finite number > 0 (${def.meta.id})`);
-    }
-    if (cooldownMs !== undefined && (!Number.isFinite(cooldownMs) || cooldownMs < MIN_CLICK_COOLDOWN_MS)) {
-      fail(`clickable.cooldownMs must be a finite number >= ${MIN_CLICK_COOLDOWN_MS}ms (${def.meta.id})`);
-    }
-  }
-
-  return def;
-}
-
-/**
  * Resolves a definition's clickable to its always-usable form: defaults
  * filled in, currency verified. `undefined` when the definition declares no
  * primary currency, or `clickable.currencyCode` names a currency the

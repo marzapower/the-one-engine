@@ -2,8 +2,9 @@ import { describe, expect, it } from "vitest";
 
 import type { Currency, Prestige, Producer, Upgrade } from "../models/base";
 import { NR } from "../nums";
-import { MIN_CLICK_COOLDOWN_MS, parseGameDefinition, resolveClickable } from "./definition";
+import { MIN_CLICK_COOLDOWN_MS, resolveClickable } from "./definition";
 import type { GameDefinition } from "./definition";
+import { parseGameDefinition } from "./validate-definition";
 
 function baseDefinition(overrides: Partial<GameDefinition> = {}): GameDefinition {
   const primary: Currency = { code: "gold", name: "Gold", primary: true, amount: NR(0) };

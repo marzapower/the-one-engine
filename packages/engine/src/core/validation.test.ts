@@ -472,3 +472,166 @@ describe("validateBootstrap", () => {
     });
   });
 });
+
+describe("validateBootstrap — exact output on a broken state (pins the messages across refactors)", () => {
+  const growth = (func: string, base: number, coeff: number) => ({ base: NR(base), coeff: NR(coeff), func, scaleOn: ScaleOn.self });
+  const effect = (kind: "producer" | "currency" | "upgrade", code: string, path: string, type = "mult") => ({
+    stage: 0 as const,
+    target: { kind, code, path },
+    type,
+    func: growth("linear", 1, 1),
+  });
+
+  const buildBrokenState = (): GameState => {
+    const state = createInitialState();
+    state.currencies = [
+      { code: "one", name: "One", amount: NR(0), primary: true },
+      { code: "one", name: "One again", amount: NR(0) },
+    ];
+    state.producers = [
+      {
+        code: "p1",
+        name: "P1",
+        amount: NR(0),
+        bought: NR(0),
+        currencyCode: "one",
+        scaling: growth("geometric", 10, 1),
+        produces: [{ code: "ghost", persec: NR(1) }],
+        capacity: { base: NR(0), factor: NR(-1), decayScale: 0, overflowRate: -0.5 },
+      },
+      { code: "p1", name: "P1 again", amount: NR(0), bought: NR(0), currencyCode: "one", scaling: growth("nope", 1, 1), produces: [] },
+      {
+        code: "p2",
+        name: "P2",
+        amount: NR(0),
+        bought: NR(0),
+        currencyCode: "one",
+        scaling: growth("exponential", 0, 0),
+        produces: [{ code: "one", persec: NR(1) }],
+        capacity: { base: NR(5), factor: NR(5), decayScale: 2, overflowRate: 0.5 },
+      },
+    ];
+    state.upgrades = [
+      {
+        code: "u1",
+        name: "U1",
+        amount: NR(0),
+        bought: NR(0),
+        currencyCode: "one",
+        scaling: growth("double_exponential", 1, 2),
+        effects: [
+          effect("currency", "missing", "amount"),
+          effect("producer", "missing", "amount"),
+          effect("upgrade", "missing", "amount"),
+          effect("currency", "one", "a.b.c"),
+          effect("currency", "one", "amount", "made_up"),
+          { ...effect("currency", "one", "amount"), func: growth("linear", -1, 1) },
+        ],
+        behaviors: [{ kind: "prestigeDrip", prestigeCode: "ghost", ratePerSecond: 1 }, { kind: "keepLevels", prestigeCode: "pr1", fraction: 0.5 }, { kind: "autobuyUpgrades" }],
+      },
+      { code: "u1", name: "U1 again", amount: NR(0), bought: NR(0), currencyCode: "one", scaling: growth("geometric", 10, 1), effects: [] },
+    ];
+    state.prestiges = [
+      {
+        code: "pr1",
+        currencyCode: "one",
+        source: { kind: "currency", code: "nowhere", path: "earned" },
+        target: { kind: "producer", code: "p1", path: "x.y" },
+        effects: [effect("upgrade", "missing", "amount", "bogus")],
+        func: growth("logarithmic", 1, 0),
+      },
+      {
+        code: "pr1",
+        currencyCode: "one",
+        source: { kind: "currency", code: "one", path: "earned" },
+        target: { kind: "upgrade", code: "gone", path: "amount" },
+        effects: [],
+        func: growth("exponential", 2, 1),
+      },
+    ];
+    state.rules = {
+      saturation: {
+        overflowCurrencyCode: "no-overflow",
+        gate: { currencyCode: "no-gate", earnedAtLeast: 1 },
+        push: { currencyCode: "no-push", exponent: 1 },
+      },
+    };
+    return state;
+  };
+
+  it("reports exactly these errors and warnings, in this order", () => {
+    const result = validateBootstrap(buildBrokenState(), buildServices());
+
+    expect(result.errors).toEqual([
+      "Duplicate producer code: p1",
+      "Duplicate currency code: one",
+      "Duplicate upgrade code: u1",
+      "Duplicate prestige code: pr1",
+      'Producer p1: produces reference to unknown code "ghost"',
+      "Producer p1: capacity.base must be > 0",
+      "Producer p1: capacity.factor must be > 0",
+      "Producer p1: capacity.decayScale must be > 0",
+      "Producer p1: capacity.overflowRate must be >= 0",
+      'producer p1 scaling: unknown growth method "nope"',
+      "producer p2 scaling: base must be >= 1e-10",
+      'Upgrade u1: effect targets unknown currency "missing"',
+      'Upgrade u1: effect targets unknown producer "missing"',
+      'Upgrade u1: effect targets unknown upgrade "missing"',
+      "Upgrade u1: effect target path cannot be resolved for currency:one:a.b.c",
+      'Upgrade u1: unknown effect type "made_up"',
+      "Upgrade u1 func: base must be >= 0",
+      'Upgrade u1: behavior "prestigeDrip" references unknown prestige "ghost"',
+      'Prestige pr1: source targets unknown currency "nowhere"',
+      "Prestige pr1: target path cannot be resolved for producer:p1:x.y",
+      "prestige pr1: coeff must be >= 1e-10",
+      'Prestige pr1: effect targets unknown upgrade "missing"',
+      'Prestige pr1: unknown effect type "bogus"',
+      'Prestige pr1: target targets unknown upgrade "gone"',
+      'rules.saturation.overflowCurrencyCode: unknown currency "no-overflow"',
+      'rules.saturation.gate.currencyCode: unknown currency "no-gate"',
+      'rules.saturation.push.currencyCode: unknown currency "no-push"',
+    ]);
+    expect(result.warnings).toEqual([
+      "producer p1 scaling: coeff is 1 (may indicate configuration error)",
+      "upgrade u1 scaling: coeff is 1 (may indicate configuration error)",
+      "prestige pr1: coeff is 1 (may indicate configuration error)",
+    ]);
+    expect(result.report.validationErrors).toEqual(result.errors);
+    expect(result.report.validationWarnings).toEqual(result.warnings);
+    expect(result.report).toMatchObject({ producers: 3, currencies: 2, upgrades: 2, prestiges: 2, pathsCompiled: 0 });
+  });
+
+  it("reports upper domain bounds and non-numeric parameters of a custom growth method", () => {
+    const services = buildServices();
+    services.growths.register({
+      id: "bounded",
+      version: "1.0.0",
+      compute: (base: unknown) => N(base as GenericNumberInput),
+      capabilities: { hasClosedFormSum: false, hasClosedFormNmax: false, domain: { base: { max: 5 }, coeff: { min: 1, max: 2 } } },
+    });
+    const state = createInitialState();
+    state.currencies = [{ code: "one", name: "One", amount: NR(0) }];
+    state.producers = [
+      { code: "a", name: "A", amount: NR(0), bought: NR(0), currencyCode: "one", scaling: growth("bounded", 9, 0), produces: [] },
+      { code: "b", name: "B", amount: NR(0), bought: NR(0), currencyCode: "one", scaling: growth("bounded", 1, 3), produces: [] },
+      {
+        code: "c",
+        name: "C",
+        amount: NR(0),
+        bought: NR(0),
+        currencyCode: "one",
+        scaling: { base: "abc" as unknown as ReturnType<typeof NR>, coeff: NR(1.5), func: "bounded", scaleOn: ScaleOn.self },
+        produces: [],
+      },
+    ];
+
+    const result = validateBootstrap(state, services);
+    expect(result.errors).toEqual([
+      "producer a scaling: base must be <= 5",
+      "producer a scaling: coeff must be >= 1",
+      "producer b scaling: coeff must be <= 2",
+      "producer c scaling: base must be <= 5",
+    ]);
+    expect(result.warnings).toEqual([]);
+  });
+});

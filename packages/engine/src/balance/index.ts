@@ -8,3 +8,4 @@ export * from "./queries";
 export * from "./report";
 export * from "./saturation-onset";
 export * from "./types";
+export * from "./validate-definition";

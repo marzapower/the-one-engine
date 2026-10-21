@@ -101,7 +101,7 @@ export { offlineTickLength } from "./core/offline";
 // ============================================================================
 // Validation
 // ============================================================================
-export { validateBootstrap, type ValidationResult } from "./core/validation";
+export { validateBootstrap, type ValidationResult, type DefinitionIssue, type DefinitionIssueCode, type DefinitionRange } from "./core/validation";
 
 // ============================================================================
 // Growth formulas
