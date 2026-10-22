@@ -32,6 +32,9 @@ export interface Buyable extends Ownable {
 
   /** Maximum number of units that can be bought. */
   max?: Numerus;
+
+  /** Purchase gate (see `Unlock`). Blocks buying, not viewing. */
+  unlock?: Unlock;
 }
 
 /** An entity that a prestige can reset. */
@@ -52,6 +55,24 @@ export interface Target {
    * array (`produces.*.persec`), a number selects one element (`produces.0.persec`).
    */
   path: string;
+  /**
+   * Dynamic producer selection (`kind: "producer"` only). The target resolves,
+   * at every read, to the LAST producer of `highestOwnedOf` with `amount > 0`
+   * (the list runs from the lowest to the highest tier). With none owned it
+   * resolves to nothing. By convention `code` is the first element of the list.
+   */
+  select?: { highestOwnedOf: string[] };
+}
+
+/**
+ * A purchase gate: the entity can be bought only while `entity[field] > gt`
+ * for the referenced currency, producer or upgrade. A missing entity locks.
+ */
+export interface Unlock {
+  kind: "currency" | "producer" | "upgrade";
+  code: string;
+  field: "amount" | "earned" | "bought";
+  gt: Numerus;
 }
 
 /**

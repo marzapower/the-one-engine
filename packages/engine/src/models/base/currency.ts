@@ -1,5 +1,5 @@
 import { type Numerus } from "../../nums";
-import { type Coded, type Growable, type Ownable, type Resettable } from "./common";
+import { type Coded, type Effect, type Growable, type Ownable, type Resettable } from "./common";
 
 /**
  * Which stock of a prestige currency drives the passive effects of the
@@ -52,4 +52,21 @@ export interface Currency extends Ownable, Growable, Coded, Resettable {
    * multiplies the currency's real-time decay rate. Never written by effects.
    */
   coolingMult?: Numerus;
+
+  /**
+   * Drip channel (meaningful on a prestige currency, base 1): effects
+   * targeting `dripMult` fold onto this value, and the result multiplies the
+   * `prestigeDrip` behaviours paying this currency. Never written by effects.
+   */
+  dripMult?: Numerus;
+
+  /** Codes of the prestiges that reset this currency's `earned` to 0 (its `amount` follows `resetsOn`). */
+  resetsEarnedOn?: string[];
+
+  /**
+   * Passive effects of the currency itself, driven by its `amount` (not the
+   * prestige drive). Persistent paths only; collected after upgrade and
+   * prestige effects.
+   */
+  effects?: Effect[];
 }

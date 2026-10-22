@@ -1,4 +1,5 @@
 import type { Engine } from "../core/engine";
+import { resolveTargetCode } from "../core/prestige-run";
 import type { Effect, Upgrade } from "../models/base";
 import { type Decimal, N, NR } from "../nums";
 import type { GameState } from "../state";
@@ -94,6 +95,12 @@ function factorial(n: number): Decimal {
   return result;
 }
 
+/** Valuation switches shared by the bot and the metric. Defaults keep the historical valuation. */
+export interface ValueOptions {
+  /** When true an effect whose (resolved) target producer has amount 0 is worth 0. Default false. */
+  ignoreUnownedTargets?: boolean;
+}
+
 /**
  * True when `effect` touches the production of the primary currency,
  * directly (currency = primary, path `persecDelta`) or indirectly (a
@@ -102,7 +109,7 @@ function factorial(n: number): Decimal {
  * producer whose chain doesn't reach the primary) don't contribute value
  * under this model.
  */
-function effectImpactsPrimaryChain(state: GameState, effect: Effect, primaryCode: string): boolean {
+function effectImpactsPrimaryChain(state: GameState, effect: Effect, primaryCode: string, opts?: ValueOptions): boolean {
   const { target } = effect;
 
   if (target.kind === "currency") {
@@ -110,7 +117,14 @@ function effectImpactsPrimaryChain(state: GameState, effect: Effect, primaryCode
   }
 
   if (target.kind === "producer" && target.path === "produces.*.persec") {
-    return resolveChainToPrimary(state, target.code) !== null;
+    // A dynamic target (`select`) is valued on the tier it currently hits; with
+    // nothing owned it falls back to its declared `code` (the first of the list).
+    const resolved = resolveTargetCode(state, target);
+    if (opts?.ignoreUnownedTargets) {
+      const owned = resolved !== null && N(state.producers.find((p) => p.code === resolved)?.amount ?? 0).gt(0);
+      if (!owned) return false;
+    }
+    return resolveChainToPrimary(state, resolved ?? target.code) !== null;
   }
 
   return false;
@@ -142,7 +156,7 @@ function effectImpactsPrimaryChain(state: GameState, effect: Effect, primaryCode
  *
  * Effects on other currencies contribute 0.
  */
-export function horizonValueOfUpgrade(engine: Engine, state: GameState, upgrade: Upgrade, horizonMs: number): Decimal {
+export function horizonValueOfUpgrade(engine: Engine, state: GameState, upgrade: Upgrade, horizonMs: number, opts?: ValueOptions): Decimal {
   const H = N(horizonMs).div(1000);
   const primaryCurrency = primaryCurrencyOf(state);
   if (!primaryCurrency) return N(0);
@@ -154,7 +168,7 @@ export function horizonValueOfUpgrade(engine: Engine, state: GameState, upgrade:
   let total = N(0);
 
   for (const effect of upgrade.effects) {
-    if (!effectImpactsPrimaryChain(state, effect, primaryCode)) continue;
+    if (!effectImpactsPrimaryChain(state, effect, primaryCode, opts)) continue;
 
     if (effect.type === "mult") {
       const denom = engine.growthValue(effect.func, NR(bought));

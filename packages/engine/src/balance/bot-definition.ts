@@ -1,6 +1,6 @@
 import { N } from "../nums";
 import type { GameState } from "../state";
-import { GREEDY_DEFAULTS, GreedyBot } from "./greedy-bot";
+import { GREEDY_DEFAULTS, GreedyBot, assertValidGreedyOptions } from "./greedy-bot";
 import type { GreedyBotOptions, ResolvedGreedyBotOptions } from "./greedy-bot";
 import type { BotContext, BotIntent, BotPolicy } from "./types";
 
@@ -67,9 +67,22 @@ export function parseBotDefinition(raw: unknown): BotDefinition {
   if (typeof def.meta.version !== "number") fail(`meta.version missing (${def.meta.id})`);
   if (def.policy !== "greedy") fail(`unknown policy "${String(def.policy)}" (${def.meta.id})`);
 
+  const validateOptions = (options: GreedyBotOptions, where: string): void => {
+    try {
+      assertValidGreedyOptions(options);
+    } catch (error) {
+      fail(`${error instanceof Error ? error.message : String(error)} (${where}, ${def.meta.id})`);
+    }
+  };
+  if (def.options !== undefined) {
+    if (typeof def.options !== "object" || def.options === null) fail(`"options" must be an object (${def.meta.id})`);
+    validateOptions(def.options, "options");
+  }
+
   for (const phase of def.phases ?? []) {
     if (typeof phase.when !== "object" || phase.when === null) fail(`phase without "when" condition (${def.meta.id})`);
     if (typeof phase.options !== "object" || phase.options === null) fail(`phase without "options" (${def.meta.id})`);
+    validateOptions(phase.options, "phase options");
     for (const threshold of phase.when.currencies ?? []) {
       if (!threshold.code || threshold.atLeast === undefined) fail(`currency condition needs code + atLeast (${def.meta.id})`);
     }

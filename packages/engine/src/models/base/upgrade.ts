@@ -12,23 +12,30 @@ export type UpgradeBehavior =
    * (`prestigeCode` restricts it to the upgrades resetting on that prestige),
    * paying from the upgrade's own cost pool and respecting `max`.
    */
-  | { kind: "autobuyUpgrades"; prestigeCode?: string }
+  | { kind: "autobuyUpgrades"; prestigeCode?: string; upgradeCodes?: string[] }
   /**
    * Every second grants `ratePerSecond · level` of the gain the prestige would
    * deliver right now to the prestige currency (`amount` and `earned`).
    */
   | { kind: "prestigeDrip"; prestigeCode: string; ratePerSecond: number }
   /**
-   * Performs the prestige when `(earned + gain) / earned >= ratio`, or at the
-   * first whole unit of gain when nothing was earned yet.
+   * With `rule: "ratio"` (default, `ratio` required) performs the prestige when
+   * `(earned + gain) / earned >= ratio`, or at the first whole unit of gain when
+   * nothing was earned yet. With `rule: "rate"` performs it once the run's
+   * earning rate has dropped (see `rateRulePrestige`).
    */
-  | { kind: "autoPrestige"; prestigeCode: string; ratio: number }
+  | { kind: "autoPrestige"; prestigeCode: string; ratio?: number; rule?: "ratio" | "rate" }
   /**
    * When the prestige fires, the upgrades it resets keep `floor(bought · fraction)`
    * levels. With several active keepLevels for the same prestige the largest
    * fraction wins.
    */
-  | { kind: "keepLevels"; prestigeCode: string; fraction: number };
+  | { kind: "keepLevels"; prestigeCode: string; fraction: number; upgradeCodes?: string[] }
+  /**
+   * After a prestige, each listed upgrade that the prestige resets restarts at
+   * `max(kept levels, levels)`.
+   */
+  | { kind: "grantLevels"; prestigeCode: string; upgradeCode: string; levels: number };
 
 export interface Upgrade extends Buyable, Coded, Resettable {
   name: string;
@@ -42,4 +49,10 @@ export interface Upgrade extends Buyable, Coded, Resettable {
   effects: Effect[];
 
   behaviors?: UpgradeBehavior[];
+
+  /**
+   * On purchase, every `add` effect on a producer's `resetsTo` also adds the
+   * increment to that producer's `amount` (never to `bought`).
+   */
+  grantOnPurchase?: boolean;
 }

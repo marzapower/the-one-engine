@@ -56,6 +56,8 @@ export function isTransientTargetPath(path: string): boolean {
  *   - upgrade effects: `upgrade.bought` (skipped if `bought <= 0`)
  *   - prestige effects: `prestigeDrive(currency)` (skipped if `<= 0` — the
  *     passive must already apply at exactly the currency's first unit)
+ *   - currency effects (`Currency.effects`): the currency's `amount`
+ *     (skipped if `<= 0`), collected after upgrade and prestige effects
  */
 export function collectModifiers(state: GameState, services: EngineServices): Map<object, Modifier[]> {
   interface Entry {
@@ -89,6 +91,19 @@ export function collectModifiers(state: GameState, services: EngineServices): Ma
       entries.push({
         effect,
         amount: drive,
+        stage: effect.stage,
+        priority: services.effectTypes.lookup(effect.type)?.priority ?? 100,
+      });
+    }
+  }
+
+  for (const currency of state.currencies) {
+    if (!currency.effects?.length || N(currency.amount).lte(0)) continue;
+    for (const effect of currency.effects) {
+      if (isTransientTargetPath(effect.target.path)) continue;
+      entries.push({
+        effect,
+        amount: currency.amount,
         stage: effect.stage,
         priority: services.effectTypes.lookup(effect.type)?.priority ?? 100,
       });

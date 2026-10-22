@@ -1,7 +1,10 @@
 import type { Currency, Upgrade, UpgradeBehavior } from "../models/base";
-import { N, NR, type Numerus } from "../nums";
+import { Decimal, N, NR } from "../nums";
 import type { GameState } from "../state";
 import type { Engine } from "./engine";
+import { foldCurrencyChannel } from "./prestige-gain";
+import { rateRulePrestige } from "./prestige-run";
+import { buyUpgrade } from "./purchase";
 
 /**
  * Behaviours of the given kind declared by upgrades with `bought >= 1`, in
@@ -25,27 +28,21 @@ export function activeBehaviors<K extends UpgradeBehavior["kind"]>(state: GameSt
  * Each tick, every active `autobuyUpgrades` behaviour buys one level of every
  * upgrade its `prestigeCode` resets (or, without a `prestigeCode`, every
  * upgrade that resets on any prestige), paying from the upgrade's own cost
- * pool and respecting its `max`. A behaviour naming an unknown prestige is
+ * pool and respecting its `max` and `unlock`. `upgradeCodes` restricts the
+ * targets to the listed upgrades. A behaviour naming an unknown prestige is
  * ignored entirely.
  */
 export function runUpgradeAutobuyers(engine: Engine, state: GameState): void {
-  const { registry } = engine.services;
   for (const { behavior } of activeBehaviors(state, "autobuyUpgrades")) {
     if (behavior.prestigeCode && !state.prestiges.some((p) => p.code === behavior.prestigeCode)) continue;
 
-    const targets = state.upgrades.filter((u) => (behavior.prestigeCode ? (u.resetsOn?.includes(behavior.prestigeCode) ?? false) : (u.resetsOn?.length ?? 0) > 0));
+    const targets = state.upgrades.filter(
+      (u) =>
+        (behavior.prestigeCode ? (u.resetsOn?.includes(behavior.prestigeCode) ?? false) : (u.resetsOn?.length ?? 0) > 0) &&
+        (!behavior.upgradeCodes || behavior.upgradeCodes.includes(u.code)),
+    );
 
-    for (const upgrade of targets) {
-      if (upgrade.max && N(upgrade.amount).add(1).gt(N(upgrade.max))) continue;
-
-      const cost = engine.costToBuyNext(upgrade, 1);
-      const pool = (registry.getByCode(state, "currency", upgrade.currencyCode) ?? registry.getByCode(state, "producer", upgrade.currencyCode)) as { amount: Numerus } | undefined;
-      if (!pool || N(cost).gt(N(pool.amount))) continue;
-
-      pool.amount = NR(N(pool.amount).sub(N(cost)));
-      upgrade.bought = NR(N(upgrade.bought).add(1));
-      upgrade.amount = NR(N(upgrade.amount).add(1));
-    }
+    for (const upgrade of targets) buyUpgrade(engine, state, upgrade.code);
   }
 }
 
@@ -67,7 +64,8 @@ export function applyPrestigeDrips(engine: Engine, state: GameState, elapsedMs: 
     if (gain.lte(0)) continue;
 
     const level = N(upgrade.bought).toNumber();
-    const drip = gain.mul(behavior.ratePerSecond * level * (elapsedMs / 1000));
+    const dripMult = foldCurrencyChannel(state, prestige.currencyCode, "dripMult", engine.services);
+    const drip = gain.mul(behavior.ratePerSecond * level * (elapsedMs / 1000)).mul(dripMult);
 
     const currency = engine.services.registry.getByCode(state, "currency", prestige.currencyCode) as Currency | undefined;
     if (!currency) continue;
@@ -88,6 +86,12 @@ export function runAutoPrestiges(engine: Engine, state: GameState): void {
     const prestige = state.prestiges.find((p) => p.code === behavior.prestigeCode);
     if (!prestige) continue;
 
+    if (behavior.rule === "rate") {
+      if (rateRulePrestige(engine, state, prestige)) engine.performPrestige(state, prestige);
+      continue;
+    }
+    if (behavior.ratio === undefined) continue;
+
     const gain = engine.prestigeGain(state, prestige);
     if (gain.lt(1)) continue;
 
@@ -102,12 +106,37 @@ export function runAutoPrestiges(engine: Engine, state: GameState): void {
 /**
  * The largest `keepLevels` fraction active for `prestigeCode` (several
  * behaviours may target the same prestige; the strongest one wins), or 0
- * when none applies.
+ * when none applies. With `upgradeCode`, behaviours carrying an `upgradeCodes`
+ * list count only if it contains that upgrade; without it every behaviour counts.
  */
-export function keptLevelsFraction(state: GameState, prestigeCode: string): number {
+export function keptLevelsFraction(state: GameState, prestigeCode: string, upgradeCode?: string): number {
   let max = 0;
   for (const { behavior } of activeBehaviors(state, "keepLevels")) {
-    if (behavior.prestigeCode === prestigeCode) max = Math.max(max, behavior.fraction);
+    if (behavior.prestigeCode !== prestigeCode) continue;
+    if (upgradeCode !== undefined && behavior.upgradeCodes && !behavior.upgradeCodes.includes(upgradeCode)) continue;
+    max = Math.max(max, behavior.fraction);
   }
   return max;
+}
+
+/** The `grantLevels` floor active for an upgrade after `prestigeCode` fires: the largest `levels`, or 0. */
+export function grantedLevels(state: GameState, prestigeCode: string, upgradeCode: string): number {
+  let max = 0;
+  for (const { behavior } of activeBehaviors(state, "grantLevels")) {
+    if (behavior.prestigeCode === prestigeCode && behavior.upgradeCode === upgradeCode) max = Math.max(max, behavior.levels);
+  }
+  return max;
+}
+
+/**
+ * Levels `upgrade` will have right after `prestigeCode` fires: the kept share of
+ * its `bought` (`keepLevels`) or the `grantLevels` floor, whichever is larger;
+ * 0 when the prestige does not reset it. The single rule `performPrestige`
+ * applies, exported so a UI can announce it.
+ */
+export function levelsAfterPrestige(state: GameState, prestigeCode: string, upgrade: Upgrade): Decimal {
+  if (!upgrade.resetsOn?.includes(prestigeCode)) return N(upgrade.bought);
+  const fraction = keptLevelsFraction(state, prestigeCode, upgrade.code);
+  const kept = fraction > 0 && N(upgrade.bought).gt(0) ? N(upgrade.bought).mul(fraction).floor() : N(0);
+  return Decimal.max(kept, N(grantedLevels(state, prestigeCode, upgrade.code)));
 }

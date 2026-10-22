@@ -65,3 +65,35 @@ describe("botFromDefinition", () => {
     expect(bot.id).toBe("my-bot");
   });
 });
+
+describe("new profile options in definitions", () => {
+  const meta = { id: "expert", version: 1 };
+
+  it("accepts prestigeRules, shopPriority, crumbFraction and ignoreUnownedTargets, in options and phases", () => {
+    const options = {
+      prestigeRules: { fragmentation: "rate", compression: { minGain: 1 } },
+      shopPriority: ["upgrade:a", "producer:t0"],
+      crumbFraction: 0.2,
+      ignoreUnownedTargets: true,
+    };
+    const def = parseBotDefinition({ meta, policy: "greedy", options, phases: [{ when: {}, options: { shopPriority: null } }] });
+    expect(def.options).toEqual(options);
+    expect(() => botFromDefinition(def)).not.toThrow();
+  });
+
+  it("rejects malformed new options", () => {
+    const parse = (options: unknown) => parseBotDefinition({ meta, policy: "greedy", options });
+    expect(() => parse({ prestigeRules: { x: "sometimes" } })).toThrow(/prestigeRules/);
+    expect(() => parse({ prestigeRules: { x: { minGain: -1 } } })).toThrow(/prestigeRules/);
+    expect(() => parse({ shopPriority: ["nope"] })).toThrow(/shopPriority/);
+    expect(() => parse({ crumbFraction: -0.1 })).toThrow(/crumbFraction/);
+    expect(() => parseBotDefinition({ meta, policy: "greedy", phases: [{ when: {}, options: { crumbFraction: Number.NaN } }] })).toThrow(/crumbFraction/);
+  });
+
+  it("GREEDY_DEFAULTS carries the neutral values of the new options", () => {
+    expect(GREEDY_DEFAULTS.prestigeRules).toEqual({});
+    expect(GREEDY_DEFAULTS.shopPriority).toBeNull();
+    expect(GREEDY_DEFAULTS.crumbFraction).toBe(0.1);
+    expect(GREEDY_DEFAULTS.ignoreUnownedTargets).toBe(false);
+  });
+});

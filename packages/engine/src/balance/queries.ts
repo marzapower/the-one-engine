@@ -1,6 +1,7 @@
 import type { Engine } from "../core/engine";
+import { producerPurchaseBlock, upgradePurchaseBlock } from "../core/purchase";
 import type { Currency, Producer, Upgrade } from "../models/base";
-import { N, type Numerus } from "../nums";
+import type { Numerus } from "../nums";
 import type { GameState } from "../state";
 
 /**
@@ -23,13 +24,8 @@ export function upgradeCost(engine: Engine, upgrade: Upgrade): Numerus {
   return engine.costToBuyNext(upgrade, 1);
 }
 
-/**
- * Resolves the pool an entity's cost is paid FROM: a currency, or a
- * producer's unit stock (`amount`) — upgrades may cost producer units.
- */
-export function findCostPool(state: GameState, code: string): { amount: Numerus } | undefined {
-  return state.currencies.find((c) => c.code === code) ?? state.producers.find((p) => p.code === code);
-}
+/** Cost-pool lookup: owned by the core (`core/purchase.ts`), re-exported so balance consumers keep their import path. */
+export { findCostPool } from "../core/purchase";
 
 /**
  * A sample point is "dead" when NO action is available: no producer's next
@@ -37,22 +33,9 @@ export function findCostPool(state: GameState, code: string): { amount: Numerus 
  * and no prestige would yield a positive gain. See types.ts DeadTimeWindow.
  */
 export function anyActionAvailable(engine: Engine, state: GameState): boolean {
-  for (const producer of state.producers) {
-    const currency = state.currencies.find((c) => c.code === producer.currencyCode);
-    if (!currency) continue;
-    if (N(nextUnitCost(engine, producer)).lte(N(currency.amount))) {
-      return true;
-    }
-  }
-
-  for (const upgrade of state.upgrades) {
-    if (upgrade.max && N(upgrade.amount).add(1).gt(N(upgrade.max))) continue;
-    const pool = findCostPool(state, upgrade.currencyCode);
-    if (!pool) continue;
-    if (N(upgradeCost(engine, upgrade)).lte(N(pool.amount))) {
-      return true;
-    }
-  }
+  // Purchase rules (max, lock, cost pool, affordability) live in the core: one source of truth.
+  if (state.producers.some((producer) => producerPurchaseBlock(engine, state, producer, 1) === null)) return true;
+  if (state.upgrades.some((upgrade) => upgradePurchaseBlock(engine, state, upgrade) === null)) return true;
 
   for (const prestige of state.prestiges) {
     if (engine.prestigeGain(state, prestige).gt(0)) {

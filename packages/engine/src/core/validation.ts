@@ -1,7 +1,8 @@
-import type { Effect, GrowthFunction, Target } from "../models/base";
+import type { Effect, GrowthFunction, Target, Unlock } from "../models/base";
 import { type Decimal, type GenericNumberInput, N } from "../nums";
 import type { BootstrapReport, GameState } from "../state";
 import type { EngineServices } from "./di/types";
+import { isTransientTargetPath } from "./modifiers";
 
 export interface ValidationResult {
   errors: string[];
@@ -26,7 +27,9 @@ export type DefinitionIssueCode =
   | "unresolvablePath"
   | "unknownGrowth"
   | "unknownEffectType"
-  | "unsupportedCostCurve";
+  | "unsupportedCostCurve"
+  | "invalidGrant"
+  | "invalidBehavior";
 
 /** The interval a numeric field must lie in; bounds are inclusive unless flagged exclusive. */
 export interface DefinitionRange {
@@ -92,6 +95,15 @@ export function checkTarget(
   target: Target,
 ): { code: "unknownProducer" | "unknownCurrency" | "unknownUpgrade" | "unresolvablePath"; field: "code" | "path" } | undefined {
   const { registry } = services;
+  if (target.select) {
+    // Dynamic producer selection: every listed producer must exist and expose the path; nothing is resolved by ownership here.
+    if (target.kind !== "producer") return { code: "unresolvablePath", field: "path" };
+    for (const code of target.select.highestOwnedOf) {
+      if (!registry.getByCode(state, "producer", code)) return { code: "unknownProducer", field: "code" };
+      if (!registry.getAccessor({ kind: "producer", code, path: target.path }).resolve(state)) return { code: "unresolvablePath", field: "path" };
+    }
+    return undefined;
+  }
   if (!registry.getByCode(state, target.kind, target.code)) {
     return { code: TARGET_CODE_ISSUE[target.kind] ?? "unknownCurrency", field: "code" };
   }
@@ -187,6 +199,23 @@ export function walkState(
     validateGrowthFunction(effect.func, `${context} func`, [...path, "func"]);
   };
 
+  const validateUnlock = (unlock: Unlock | undefined, context: string, path: (string | number)[]): void => {
+    if (!unlock) return;
+    const owners = unlock.kind === "currency" ? state.currencies : unlock.kind === "producer" ? state.producers : state.upgrades;
+    if (!owners.some((e) => e.code === unlock.code)) {
+      error(TARGET_CODE_ISSUE[unlock.kind], [...path, "unlock", "code"], `${context}: unlock references unknown ${unlock.kind} "${unlock.code}"`);
+    }
+    if (unlock.field === "earned" && unlock.kind !== "currency") {
+      error("invalidShape", [...path, "unlock", "field"], `${context}: unlock field "earned" exists on currencies only`);
+    }
+    if (unlock.field === "bought" && unlock.kind === "currency") {
+      error("invalidShape", [...path, "unlock", "field"], `${context}: unlock field "bought" does not exist on currencies`);
+    }
+    if (toDecimal(unlock.gt) === undefined) {
+      error("invalidNumber", [...path, "unlock", "gt"], `${context}: unlock.gt must be a number`);
+    }
+  };
+
   const validateEndpoint = (prestigeIndex: number, code: string, which: "source" | "target", endpoint: Target): void => {
     const problem = checkTarget(state, { registry }, endpoint);
     const path = ["prestiges", prestigeIndex, which];
@@ -206,6 +235,7 @@ export function walkState(
     });
 
     validateGrowthFunction(producer.scaling, `producer ${producer.code} scaling`, [...path, "scaling"]);
+    validateUnlock(producer.unlock, `Producer ${producer.code}`, path);
 
     if (producer.capacity) {
       const capacity = producer.capacity;
@@ -230,8 +260,30 @@ export function walkState(
     upgrade.effects.forEach((effect, effectIndex) => validateEffect(effect, `Upgrade ${upgrade.code}`, [...path, "effects", effectIndex]));
 
     validateGrowthFunction(upgrade.scaling, `upgrade ${upgrade.code} scaling`, [...path, "scaling"]);
+    validateUnlock(upgrade.unlock, `Upgrade ${upgrade.code}`, path);
+
+    if (upgrade.grantOnPurchase) {
+      const grants = upgrade.effects.filter((e) => e.type === "add" && e.target.kind === "producer" && e.target.path === "resetsTo");
+      if (grants.length === 0) {
+        error("invalidGrant", [...path, "grantOnPurchase"], `Upgrade ${upgrade.code}: grantOnPurchase needs an "add" effect on a producer's resetsTo`);
+      }
+    }
 
     (upgrade.behaviors ?? []).forEach((behavior, behaviorIndex) => {
+      const behaviorPath = [...path, "behaviors", behaviorIndex];
+      const upgradeExists = (code: string): boolean => state.upgrades.some((u) => u.code === code);
+      const codeList = behavior.kind === "autobuyUpgrades" || behavior.kind === "keepLevels" ? behavior.upgradeCodes : undefined;
+      codeList?.forEach((code, k) => {
+        if (!upgradeExists(code)) {
+          error("unknownUpgrade", [...behaviorPath, "upgradeCodes", k], `Upgrade ${upgrade.code}: behavior "${behavior.kind}" references unknown upgrade "${code}"`);
+        }
+      });
+      if (behavior.kind === "grantLevels" && !upgradeExists(behavior.upgradeCode)) {
+        error("unknownUpgrade", [...behaviorPath, "upgradeCode"], `Upgrade ${upgrade.code}: behavior "grantLevels" references unknown upgrade "${behavior.upgradeCode}"`);
+      }
+      if (behavior.kind === "autoPrestige" && (behavior.rule ?? "ratio") === "ratio" && behavior.ratio === undefined) {
+        error("invalidBehavior", [...behaviorPath, "ratio"], `Upgrade ${upgrade.code}: behavior "autoPrestige" with rule "ratio" requires a ratio`);
+      }
       const prestigeCode = behavior.prestigeCode;
       if (isSet(prestigeCode) && !prestigeCodes.has(prestigeCode)) {
         error(
@@ -239,6 +291,19 @@ export function walkState(
           [...path, "behaviors", behaviorIndex, "prestigeCode"],
           `Upgrade ${upgrade.code}: behavior "${behavior.kind}" references unknown prestige "${prestigeCode}"`,
         );
+      }
+    });
+  });
+
+  state.currencies.forEach((currency, index) => {
+    const path = ["currencies", index];
+    (currency.resetsEarnedOn ?? []).forEach((code, k) => {
+      if (!prestigeCodes.has(code)) error("unknownPrestige", [...path, "resetsEarnedOn", k], `Currency ${currency.code}: resetsEarnedOn references unknown prestige "${code}"`);
+    });
+    (currency.effects ?? []).forEach((effect, effectIndex) => {
+      validateEffect(effect, `Currency ${currency.code}`, [...path, "effects", effectIndex]);
+      if (isTransientTargetPath(effect.target.path)) {
+        error("unresolvablePath", [...path, "effects", effectIndex, "target", "path"], `Currency ${currency.code}: currency effects must target persistent paths`);
       }
     });
   });

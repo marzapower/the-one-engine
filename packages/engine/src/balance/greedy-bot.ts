@@ -1,10 +1,11 @@
 import type { Engine } from "../core/engine";
 import { DEFAULT_PRESTIGE_DRIVE } from "../core/prestige-gain";
+import { isUnlocked } from "../core/purchase";
 import type { Producer, Upgrade } from "../models/base";
 import { type Decimal, N, NR } from "../nums";
 import type { GameState } from "../state";
 import { horizonValueOfUpgrade } from "./horizon-value";
-import { type PurchaseKey, assertValidImpactParams, evaluatePrestige, meaningfulPurchases, prestigeWorthTaking, valuePurchase } from "./impact";
+import { type PrestigeRule, type PurchaseKey, assertValidImpactParams, evaluatePrestige, meaningfulPurchases, prestigeRuleFires, valuePurchase } from "./impact";
 import { primaryCurrencyOf } from "./queries";
 import type { BotContext, BotIntent, BotPolicy } from "./types";
 
@@ -51,6 +52,60 @@ export interface GreedyBotOptions {
    * Infinity (never). Ignored while `minPurchaseImpact` is 0.
    */
   maxWaitMs?: number;
+  /**
+   * Per-prestige trigger by prestige code: "ratio" (m'/m >= `prestigeRatio`),
+   * "rate" (the core's `rateRulePrestige`: take it when the run's gain rate
+   * stops improving) or `{ minGain }` (take it once the delivered gain is at
+   * least `minGain`). A code that is absent keeps today's behaviour: ratio
+   * plus the anti-stall prestige. Codes with an explicit rule never
+   * stall-prestige. Default `{}`.
+   */
+  prestigeRules?: Record<string, PrestigeRule>;
+  /**
+   * Written shop policy for everything paid in a prestige currency (upgrades
+   * AND producers). When set (an array, possibly empty; `null` = off), those
+   * purchases are made ONLY by this policy: out of the main pass, the utility
+   * pass and the prestige shop factor. Walk the list: the first entry that is
+   * not maxed and is unlocked is the TARGET; if affordable it is bought
+   * (repeat), otherwise the bot saves and buys only LATER entries that cost
+   * at most `crumbFraction` x the target's price, spending at most
+   * `crumbFraction` x the currency's balance (at the start of the decision) on
+   * such crumbs. Entries not in the list are never bought. The target is per
+   * cost currency. An author-written profile, not an estimate. Default null.
+   */
+  shopPriority?: PurchaseKey[] | null;
+  /** Crumb price and budget fraction of `shopPriority` (>= 0). Default 0.1. */
+  crumbFraction?: number;
+  /**
+   * When true an effect whose (resolved) target producer is not owned
+   * (amount 0) is worth 0 in the horizon valuation. Default false.
+   */
+  ignoreUnownedTargets?: boolean;
+}
+
+/** Fails early on malformed option values of the profile (shared with bot definitions). */
+export function assertValidGreedyOptions(options: GreedyBotOptions): void {
+  if (options.crumbFraction !== undefined && (!Number.isFinite(options.crumbFraction) || options.crumbFraction < 0)) {
+    throw new Error(`crumbFraction must be a finite number >= 0 (got ${String(options.crumbFraction)})`);
+  }
+  if (options.shopPriority !== undefined && options.shopPriority !== null) {
+    if (!Array.isArray(options.shopPriority)) throw new Error("shopPriority must be an array of purchase keys or null");
+    for (const key of options.shopPriority) {
+      if (typeof key !== "string" || !/^(producer|upgrade):.+/.test(key)) {
+        throw new Error(`shopPriority entries must look like "producer:<code>" or "upgrade:<code>" (got ${String(key)})`);
+      }
+    }
+  }
+  if (options.prestigeRules !== undefined) {
+    if (typeof options.prestigeRules !== "object" || options.prestigeRules === null) throw new Error("prestigeRules must be an object keyed by prestige code");
+    for (const [code, rule] of Object.entries(options.prestigeRules)) {
+      if (rule === "ratio" || rule === "rate") continue;
+      const minGain = typeof rule === "object" && rule !== null ? (rule as { minGain?: unknown }).minGain : undefined;
+      if (typeof minGain !== "number" || !Number.isFinite(minGain) || minGain < 0) {
+        throw new Error(`prestigeRules.${code} must be "ratio", "rate" or { minGain: number >= 0 }`);
+      }
+    }
+  }
 }
 
 /** GreedyBotOptions with every default resolved — the bot's live, mutable knob set. */
@@ -64,6 +119,10 @@ export const GREEDY_DEFAULTS: ResolvedGreedyBotOptions = {
   maxPassiveLossPct: Number.POSITIVE_INFINITY,
   minPurchaseImpact: 0,
   maxWaitMs: Number.POSITIVE_INFINITY,
+  prestigeRules: {},
+  shopPriority: null,
+  crumbFraction: 0.1,
+  ignoreUnownedTargets: false,
 };
 
 /** Safety cap on purchase intents per decision point, matching HarnessParams.maxActionsPerDecision default. */
@@ -114,16 +173,17 @@ export class GreedyBot implements BotPolicy {
     const next = { ...this.options };
     for (const key of Object.keys(GREEDY_DEFAULTS) as (keyof ResolvedGreedyBotOptions)[]) {
       const value = partial[key];
-      if (value !== undefined) next[key] = value;
+      if (value !== undefined) (next as Record<string, unknown>)[key] = value;
     }
     assertValidImpactParams(next.minPurchaseImpact, next.horizonMs);
+    assertValidGreedyOptions(next);
     if (Number.isNaN(next.maxWaitMs) || next.maxWaitMs < 0) {
       throw new Error(`maxWaitMs must be a number >= 0 (got ${String(next.maxWaitMs)})`);
     }
 
     for (const key of Object.keys(GREEDY_DEFAULTS) as (keyof ResolvedGreedyBotOptions)[]) {
       const value = partial[key];
-      if (value !== undefined) this.options[key] = value;
+      if (value !== undefined) (this.options as Record<string, unknown>)[key] = value;
     }
   }
 
@@ -143,7 +203,7 @@ export class GreedyBot implements BotPolicy {
     }
 
     // 1. Prestige takes priority when it clears the convenience bar.
-    const prestigeIntent = this.checkPrestigeRatio(engine, state);
+    const prestigeIntent = this.checkPrestigeRules(engine, state);
     if (prestigeIntent) {
       this.lastActionTsSimMs = tSimMs;
       this.resetProgressTracking(tSimMs);
@@ -200,20 +260,29 @@ export class GreedyBot implements BotPolicy {
     const { minPurchaseImpact, horizonMs, maxWaitMs } = this.options;
     if (minPurchaseImpact <= 0) return this.planPurchases(engine, state);
 
-    const relevant = meaningfulPurchases(engine, state, minPurchaseImpact, horizonMs);
+    const relevant = meaningfulPurchases(engine, state, minPurchaseImpact, horizonMs, {
+      ignoreUnownedTargets: this.options.ignoreUnownedTargets,
+      excludePrestigeShop: this.options.shopPriority !== null,
+    });
     if (relevant.size > 0) return this.planPurchases(engine, state, relevant);
     if (tSimMs - this.lastPurchaseTsSimMs >= maxWaitMs) return this.planPurchases(engine, state);
     return [];
   }
 
-  private checkPrestigeRatio(engine: Engine, state: GameState): BotIntent | null {
-    const prestige = prestigeWorthTaking(engine, state, this.options.prestigeRatio);
-    return prestige ? { kind: "prestige", code: prestige.code } : null;
+  private checkPrestigeRules(engine: Engine, state: GameState): BotIntent | null {
+    const { prestigeRatio, prestigeRules, shopPriority } = this.options;
+    for (const prestige of state.prestiges) {
+      if (prestigeRuleFires(engine, state, prestige, prestigeRatio, { rules: prestigeRules, skipShop: shopPriority !== null })) {
+        return { kind: "prestige", code: prestige.code };
+      }
+    }
+    return null;
   }
 
   private checkStallPrestige(engine: Engine, state: GameState): BotIntent | null {
     for (const prestige of state.prestiges) {
-      const evaluated = evaluatePrestige(engine, state, prestige);
+      if (this.options.prestigeRules[prestige.code] !== undefined) continue; // an explicit rule replaces the anti-stall
+      const evaluated = evaluatePrestige(engine, state, prestige, { skipShop: true });
       if (evaluated?.gain.gte(1)) {
         return { kind: "prestige", code: prestige.code };
       }
@@ -280,9 +349,120 @@ export class GreedyBot implements BotPolicy {
     if (priority) greedyPass(priority);
     greedyPass();
 
-    this.planUtilityPurchases(engine, state, intents, getBudget, budgets, upgradeOffsets);
+    if (this.options.shopPriority === null) {
+      this.planUtilityPurchases(engine, state, intents, getBudget, budgets, upgradeOffsets);
+    } else {
+      this.planShopPurchases(engine, state, this.options.shopPriority, intents, producerOffsets, upgradeOffsets);
+    }
 
     return intents;
+  }
+
+  /**
+   * Shop policy (`shopPriority`): see the option. Per cost currency, the first
+   * unlocked, not-maxed entry of the list is the target; it is bought while
+   * affordable, otherwise only later entries priced at most `crumbFraction` x
+   * the target are bought, within `crumbFraction` x the balance at the start
+   * of the decision. Offsets are shared with the main pass so quotes stay right.
+   */
+  private planShopPurchases(
+    engine: Engine,
+    state: GameState,
+    priority: PurchaseKey[],
+    intents: BotIntent[],
+    producerOffsets: Map<string, Decimal>,
+    upgradeOffsets: Map<string, Decimal>,
+  ): void {
+    const prestigeCurrencies = new Set(state.prestiges.map((p) => p.currencyCode));
+    const { crumbFraction } = this.options;
+
+    interface ShopEntry {
+      key: PurchaseKey;
+      kind: "producer" | "upgrade";
+      code: string;
+      currencyCode: string;
+    }
+
+    const entries: ShopEntry[] = [];
+    const seen = new Set<string>();
+    for (const key of priority) {
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const [kind, ...rest] = key.split(":");
+      const code = rest.join(":");
+      const entity = kind === "producer" ? state.producers.find((p) => p.code === code) : state.upgrades.find((u) => u.code === code);
+      if (!entity || !prestigeCurrencies.has(entity.currencyCode)) continue;
+      entries.push({ key, kind: kind as "producer" | "upgrade", code, currencyCode: entity.currencyCode });
+    }
+
+    // Next-unit quote of an entry given the offsets already bought in this decision; null when maxed or locked.
+    const quote = (entry: ShopEntry): Decimal | null => {
+      if (entry.kind === "producer") {
+        const producer = state.producers.find((p) => p.code === entry.code);
+        if (!producer || !isUnlocked(state, producer)) return null;
+        const boughtSoFar = N(producer.bought).add(producerOffsets.get(entry.code) ?? 0);
+        if (producer.max !== undefined && boughtSoFar.gte(N(producer.max))) return null;
+        return N(engine.costToBuyNext({ ...producer, bought: NR(boughtSoFar) }, 1));
+      }
+      const upgrade = state.upgrades.find((u) => u.code === entry.code);
+      if (!upgrade || !isUnlocked(state, upgrade)) return null;
+      const boughtSoFar = N(upgrade.bought).add(upgradeOffsets.get(entry.code) ?? 0);
+      if (upgrade.max !== undefined && boughtSoFar.gte(N(upgrade.max))) return null;
+      return N(engine.costToBuyNext({ ...upgrade, bought: NR(boughtSoFar) }, 1));
+    };
+
+    const buy = (entry: ShopEntry): void => {
+      if (entry.kind === "producer") {
+        producerOffsets.set(entry.code, (producerOffsets.get(entry.code) ?? N(0)).add(1));
+        intents.push({ kind: "buyProducer", code: entry.code, amount: 1 });
+      } else {
+        upgradeOffsets.set(entry.code, (upgradeOffsets.get(entry.code) ?? N(0)).add(1));
+        intents.push({ kind: "buyUpgrade", code: entry.code });
+      }
+    };
+
+    for (const currencyCode of new Set(entries.map((e) => e.currencyCode))) {
+      const list = entries.filter((e) => e.currencyCode === currencyCode);
+      const pool = state.currencies.find((c) => c.code === currencyCode);
+      let budget = pool ? N(pool.amount) : N(0);
+      const crumbCap = budget.mul(crumbFraction);
+      let crumbsSpent = N(0);
+
+      while (intents.length < MAX_INTENTS_PER_DECISION) {
+        let targetIndex = -1;
+        let target: ShopEntry | undefined;
+        let targetCost: Decimal | null = null;
+        for (const [i, entry] of list.entries()) {
+          const cost = quote(entry);
+          if (cost === null || cost.lte(0)) continue;
+          targetIndex = i;
+          target = entry;
+          targetCost = cost;
+          break;
+        }
+        if (!target || targetCost === null) break;
+
+        if (budget.gte(targetCost)) {
+          budget = budget.sub(targetCost);
+          buy(target);
+          continue;
+        }
+
+        // Saving for the target: crumbs only, from the later entries.
+        const crumbLimit = targetCost.mul(crumbFraction);
+        let boughtCrumb = false;
+        for (const entry of list.slice(targetIndex + 1)) {
+          const cost = quote(entry);
+          if (cost === null || cost.lte(0) || cost.gt(crumbLimit) || cost.gt(budget) || crumbsSpent.add(cost).gt(crumbCap)) continue;
+          budget = budget.sub(cost);
+          crumbsSpent = crumbsSpent.add(cost);
+          buy(entry);
+          boughtCrumb = true;
+          break;
+        }
+        if (!boughtCrumb) break;
+      }
+    }
   }
 
   /**
@@ -308,6 +488,7 @@ export class GreedyBot implements BotPolicy {
       let cheapest: { code: string; currencyCode: string; cost: Decimal } | null = null;
       for (const upgrade of state.upgrades) {
         if (!prestigeCurrencies.has(upgrade.currencyCode)) continue;
+        if (!isUnlocked(state, upgrade)) continue;
 
         const offset = upgradeOffsets.get(upgrade.code) ?? N(0);
         const boughtSoFar = N(upgrade.bought).add(offset);
@@ -374,16 +555,22 @@ export class GreedyBot implements BotPolicy {
     allowed?: Set<PurchaseKey>,
   ): PurchaseCandidate | null {
     let best: PurchaseCandidate | null = null;
+    const { shopPriority, horizonMs, ignoreUnownedTargets } = this.options;
+    const shopCurrencies = shopPriority === null ? null : new Set(state.prestiges.map((p) => p.currencyCode));
+    const valueOpts = { ignoreUnownedTargets };
 
     for (const producer of state.producers) {
       const key = `producer:${producer.code}` as const;
       if (excluded.has(key) || (allowed && !allowed.has(key))) continue;
+      if (shopCurrencies?.has(producer.currencyCode)) continue; // the shop policy owns it
+      if (!isUnlocked(state, producer)) continue;
 
       const offset = producerOffsets.get(producer.code) ?? N(0);
+      if (producer.max !== undefined && N(producer.bought).add(offset).gte(N(producer.max))) continue;
       const quoted: Producer = { ...producer, bought: NR(N(producer.bought).add(offset)) };
       const cost = N(engine.costToBuyNext(quoted, 1));
 
-      const valuation = valuePurchase(engine, state, { kind: "producer", producer }, cost, this.options.horizonMs);
+      const valuation = valuePurchase(engine, state, { kind: "producer", producer }, cost, horizonMs, valueOpts);
       if (!valuation) continue;
 
       if (!best || valuation.efficiency.gt(best.efficiency)) {
@@ -394,6 +581,8 @@ export class GreedyBot implements BotPolicy {
     for (const upgrade of state.upgrades) {
       const key = `upgrade:${upgrade.code}` as const;
       if (excluded.has(key) || (allowed && !allowed.has(key))) continue;
+      if (shopCurrencies?.has(upgrade.currencyCode)) continue; // the shop policy owns it
+      if (!isUnlocked(state, upgrade)) continue;
 
       const offset = upgradeOffsets.get(upgrade.code) ?? N(0);
       const boughtSoFar = N(upgrade.bought).add(offset);
@@ -402,7 +591,7 @@ export class GreedyBot implements BotPolicy {
       const quoted: Upgrade = { ...upgrade, bought: NR(boughtSoFar) };
       const cost = N(engine.costToBuyNext(quoted, 1));
 
-      const valuation = valuePurchase(engine, state, { kind: "upgrade", upgrade: quoted }, cost, this.options.horizonMs);
+      const valuation = valuePurchase(engine, state, { kind: "upgrade", upgrade: quoted }, cost, horizonMs, valueOpts);
       if (!valuation) continue;
 
       if (!best || valuation.efficiency.gt(best.efficiency)) {

@@ -529,3 +529,72 @@ describe("parseGameDefinition — on top of validateGameDefinition", () => {
     expect(() => parseGameDefinition(null)).toThrow(/Invalid game definition/);
   });
 });
+
+describe("validateGameDefinition — upgrade/economy fields", () => {
+  const codes = (def: Json): string[] => summary(validateGameDefinition(def));
+
+  it("accepts every new field when well formed", () => {
+    const def = mutated((d) => {
+      d.producers[0].unlock = { kind: "upgrade", code: "u1", field: "bought", gt: 0 };
+      d.upgrades[0].unlock = { kind: "currency", code: "gold", field: "earned", gt: "5" };
+      d.upgrades[1].behaviors = [
+        { kind: "autoPrestige", prestigeCode: "pr", rule: "rate" },
+        { kind: "autobuyUpgrades", upgradeCodes: ["u1"] },
+        { kind: "keepLevels", prestigeCode: "pr", fraction: 0.5, upgradeCodes: ["u1"] },
+        { kind: "grantLevels", prestigeCode: "pr", upgradeCode: "u1", levels: 1 },
+      ];
+      d.upgrades[0].grantOnPurchase = true;
+      d.upgrades[0].effects.push({ stage: 0, target: { kind: "producer", code: "p1", path: "resetsTo" }, type: "add", func: lin(1, 1) });
+      d.currencies[1].resetsEarnedOn = ["pr"];
+      d.currencies[1].dripMult = 1;
+      d.currencies[0].effects = [{ stage: 0, target: { kind: "producer", code: "p1", path: "produces.*.persec" }, type: "mult", func: lin(1, 1) }];
+      d.upgrades[0].effects.push({
+        stage: 0,
+        target: { kind: "producer", code: "p1", path: "produces.*.persec", select: { highestOwnedOf: ["p1", "p2"] } },
+        type: "mult",
+        func: lin(2, 0),
+      });
+    });
+    expect(validateGameDefinition(def)).toEqual([]);
+  });
+
+  it("rejects an unlock on a missing entity, a wrong field and a NaN gt", () => {
+    expect(codes(mutated((d) => (d.upgrades[0].unlock = { kind: "currency", code: "nope", field: "amount", gt: 0 })))).toContain("unknownCurrency upgrades.0.unlock.code");
+    expect(codes(mutated((d) => (d.upgrades[0].unlock = { kind: "producer", code: "p9", field: "amount", gt: 0 })))).toContain("unknownProducer upgrades.0.unlock.code");
+    expect(codes(mutated((d) => (d.upgrades[0].unlock = { kind: "producer", code: "p1", field: "earned", gt: 0 })))).toContain("invalidShape upgrades.0.unlock.field");
+    expect(codes(mutated((d) => (d.upgrades[0].unlock = { kind: "currency", code: "gold", field: "bought", gt: 0 })))).toContain("invalidShape upgrades.0.unlock.field");
+    expect(codes(mutated((d) => (d.upgrades[0].unlock = { kind: "currency", code: "gold", field: "amount", gt: "abc" })))).toContain("invalidNumber upgrades.0.unlock.gt");
+    expect(codes(mutated((d) => (d.producers[0].unlock = { kind: "upgrade", code: "zz", field: "bought", gt: 0 })))).toContain("unknownUpgrade producers.0.unlock.code");
+  });
+
+  it("rejects grantOnPurchase without an add effect on a resetsTo", () => {
+    expect(codes(mutated((d) => (d.upgrades[0].grantOnPurchase = true)))).toContain("invalidGrant upgrades.0.grantOnPurchase");
+  });
+
+  it("rejects select on a non-producer, unknown members, and an unresolvable path", () => {
+    const withSelect = (select: Json, kind = "producer", path = "produces.*.persec"): Json =>
+      mutated((d) => d.upgrades[0].effects.push({ stage: 0, target: { kind, code: "p1", path, select }, type: "mult", func: lin(2, 0) }));
+    expect(codes(withSelect({ highestOwnedOf: ["p1", "ghost"] }))).toContain("unknownProducer upgrades.0.effects.2.target.code");
+    expect(codes(withSelect({ highestOwnedOf: ["p1", "p2"] }, "producer", "nope.x"))).toContain("unresolvablePath upgrades.0.effects.2.target.path");
+    expect(codes(withSelect({ highestOwnedOf: ["gold"] }, "currency", "amount"))).toContain("unresolvablePath upgrades.0.effects.2.target.path");
+  });
+
+  it("rejects behavior fields pointing at unknown upgrades/prestiges and a missing ratio", () => {
+    const withBehavior = (b: Json): Json => mutated((d) => (d.upgrades[1].behaviors = [b]));
+    expect(codes(withBehavior({ kind: "autobuyUpgrades", upgradeCodes: ["ghost"] }))).toContain("unknownUpgrade upgrades.1.behaviors.0.upgradeCodes.0");
+    expect(codes(withBehavior({ kind: "keepLevels", prestigeCode: "pr", fraction: 1, upgradeCodes: ["ghost"] }))).toContain("unknownUpgrade upgrades.1.behaviors.0.upgradeCodes.0");
+    expect(codes(withBehavior({ kind: "grantLevels", prestigeCode: "pr", upgradeCode: "ghost", levels: 1 }))).toContain("unknownUpgrade upgrades.1.behaviors.0.upgradeCode");
+    expect(codes(withBehavior({ kind: "grantLevels", prestigeCode: "zz", upgradeCode: "u1", levels: 1 }))).toContain("unknownPrestige upgrades.1.behaviors.0.prestigeCode");
+    expect(codes(withBehavior({ kind: "grantLevels", prestigeCode: "pr", upgradeCode: "u1", levels: 0 }))).toContain("outOfRange upgrades.1.behaviors.0.levels");
+    expect(codes(withBehavior({ kind: "autoPrestige", prestigeCode: "pr" }))).toContain("invalidBehavior upgrades.1.behaviors.0.ratio");
+    expect(codes(withBehavior({ kind: "autoPrestige", prestigeCode: "pr", rule: "rate" }))).not.toContain("invalidBehavior upgrades.1.behaviors.0.ratio");
+  });
+
+  it("rejects currency fields: unknown prestige, bad dripMult, transient/unknown effect targets", () => {
+    expect(codes(mutated((d) => (d.currencies[1].resetsEarnedOn = ["zz"])))).toContain("unknownPrestige currencies.1.resetsEarnedOn.0");
+    expect(codes(mutated((d) => (d.currencies[1].dripMult = 0)))).toContain("outOfRange currencies.1.dripMult");
+    const eff = (path: string, code = "p1"): Json => ({ stage: 0, target: { kind: "producer", code, path }, type: "mult", func: lin(1, 1) });
+    expect(codes(mutated((d) => (d.currencies[0].effects = [eff("persecDelta")])))).toContain("unresolvablePath currencies.0.effects.0.target.path");
+    expect(codes(mutated((d) => (d.currencies[0].effects = [eff("produces.*.persec", "ghost")])))).toContain("unknownProducer currencies.0.effects.0.target.code");
+  });
+});

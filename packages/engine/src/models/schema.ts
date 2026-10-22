@@ -88,6 +88,14 @@ export const TargetSchema = z.object({
   kind: z.enum(["producer", "currency", "upgrade"]),
   code: z.string(),
   path: z.string().regex(/^[a-zA-Z_][a-zA-Z0-9_.*]*$/, "path must start with letter/underscore, contain letters/digits/underscore/dot/asterisk"),
+  select: z.object({ highestOwnedOf: z.array(z.string()).min(1) }).optional(),
+});
+
+export const UnlockSchema = z.object({
+  kind: z.enum(["currency", "producer", "upgrade"]),
+  code: z.string(),
+  field: z.enum(["amount", "earned", "bought"]),
+  gt: NumerusSchema,
 });
 
 // ============================================================================
@@ -133,6 +141,7 @@ export const ProducerSchema = z.object({
   max: NumerusSchema.optional(),
   priority: z.number().optional(),
   capacity: ProducerCapacitySchema.optional(),
+  unlock: UnlockSchema.optional(),
 });
 
 // ============================================================================
@@ -153,6 +162,9 @@ export const CurrencySchema = z.object({
   capacityMult: NumerusSchema.optional(),
   gainMult: NumerusSchema.optional(),
   coolingMult: NumerusSchema.optional(),
+  dripMult: NumerusSchema.optional(),
+  resetsEarnedOn: z.array(z.string()).optional(),
+  effects: z.array(EffectSchema).optional(),
   persecDelta: NumerusSchema.optional(),
   resetsOn: z.array(z.string()).optional(),
   resetsTo: NumerusSchema.optional(),
@@ -162,10 +174,11 @@ export const CurrencySchema = z.object({
 // UPGRADE SCHEMA
 // ============================================================================
 export const UpgradeBehaviorSchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("autobuyUpgrades"), prestigeCode: z.string().optional() }),
+  z.object({ kind: z.literal("autobuyUpgrades"), prestigeCode: z.string().optional(), upgradeCodes: z.array(z.string()).optional() }),
   z.object({ kind: z.literal("prestigeDrip"), prestigeCode: z.string(), ratePerSecond: z.number() }),
-  z.object({ kind: z.literal("autoPrestige"), prestigeCode: z.string(), ratio: z.number() }),
-  z.object({ kind: z.literal("keepLevels"), prestigeCode: z.string(), fraction: z.number() }),
+  z.object({ kind: z.literal("autoPrestige"), prestigeCode: z.string(), ratio: z.number().optional(), rule: z.enum(["ratio", "rate"]).optional() }),
+  z.object({ kind: z.literal("keepLevels"), prestigeCode: z.string(), fraction: z.number(), upgradeCodes: z.array(z.string()).optional() }),
+  z.object({ kind: z.literal("grantLevels"), prestigeCode: z.string(), upgradeCode: z.string(), levels: z.number() }),
 ]);
 
 export const UpgradeSchema = z.object({
@@ -182,6 +195,8 @@ export const UpgradeSchema = z.object({
   resetsOn: z.array(z.string()).optional(),
   resetsTo: NumerusSchema.optional(),
   max: NumerusSchema.optional(),
+  unlock: UnlockSchema.optional(),
+  grantOnPurchase: z.boolean().optional(),
 });
 
 // ============================================================================
@@ -260,6 +275,12 @@ export const StatsSchema = z.object({
 // ============================================================================
 // GAME STATE SCHEMA
 // ============================================================================
+export const PrestigeRunSchema = z.object({
+  elapsedMs: z.number(),
+  earnedAtStart: NumerusSchema,
+  peakRate: NumerusSchema,
+});
+
 /** `stats` uses `.passthrough()` so fields added by future stats are not rejected. */
 export const GameStateSchema = z.object({
   stats: StatsSchema.passthrough(),
@@ -270,6 +291,7 @@ export const GameStateSchema = z.object({
   currencies: z.array(CurrencySchema),
   prestiges: z.array(PrestigeSchema),
   rules: GameRulesSchema.optional(),
+  prestigeRuns: z.record(z.string(), PrestigeRunSchema).optional(),
 });
 
 // ============================================================================

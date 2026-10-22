@@ -63,6 +63,13 @@ const effectShape = z.object({
   func: growthFunctionShape,
 });
 
+const unlockShape = z.object({
+  kind: z.enum(["currency", "producer", "upgrade"]),
+  code: z.string(),
+  field: z.enum(["amount", "earned", "bought"]),
+  gt: numberInput,
+});
+
 const producerShape = z.object({
   code: z.string(),
   name: z.string(),
@@ -77,6 +84,7 @@ const producerShape = z.object({
   max: numberInput.optional(),
   priority: plainNumber.optional(),
   capacity: z.object({ base: numberInput, factor: numberInput, decayScale: plainNumber, overflowRate: plainNumber.optional() }).optional(),
+  unlock: unlockShape.optional(),
 });
 
 const currencyShape = z.object({
@@ -89,16 +97,20 @@ const currencyShape = z.object({
   capacityMult: numberInput.optional(),
   gainMult: numberInput.optional(),
   coolingMult: numberInput.optional(),
+  dripMult: numberInput.optional(),
+  resetsEarnedOn: z.array(z.string()).optional(),
+  effects: z.array(effectShape).optional(),
   persecDelta: numberInput.optional(),
   resetsOn: z.array(z.string()).optional(),
   resetsTo: numberInput.optional(),
 });
 
 const behaviorShape = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("autobuyUpgrades"), prestigeCode: z.string().optional() }),
+  z.object({ kind: z.literal("autobuyUpgrades"), prestigeCode: z.string().optional(), upgradeCodes: z.array(z.string()).optional() }),
   z.object({ kind: z.literal("prestigeDrip"), prestigeCode: z.string(), ratePerSecond: plainNumber }),
-  z.object({ kind: z.literal("autoPrestige"), prestigeCode: z.string(), ratio: plainNumber }),
-  z.object({ kind: z.literal("keepLevels"), prestigeCode: z.string(), fraction: plainNumber }),
+  z.object({ kind: z.literal("autoPrestige"), prestigeCode: z.string(), ratio: plainNumber.optional(), rule: z.enum(["ratio", "rate"]).optional() }),
+  z.object({ kind: z.literal("keepLevels"), prestigeCode: z.string(), fraction: plainNumber, upgradeCodes: z.array(z.string()).optional() }),
+  z.object({ kind: z.literal("grantLevels"), prestigeCode: z.string(), upgradeCode: z.string(), levels: plainNumber }),
 ]);
 
 const upgradeShape = z.object({
@@ -113,6 +125,8 @@ const upgradeShape = z.object({
   resetsOn: z.array(z.string()).optional(),
   resetsTo: numberInput.optional(),
   max: numberInput.optional(),
+  unlock: unlockShape.optional(),
+  grantOnPurchase: z.boolean().optional(),
 });
 
 const prestigeShape = z.object({
@@ -322,6 +336,8 @@ function checkRules(def: GameDefinition, ctx: DefinitionValidationContext): Defi
     range(currency.gainMult, POSITIVE, [...path, "gainMult"]);
     range(currency.capacityMult, POSITIVE, [...path, "capacityMult"]);
     range(currency.coolingMult, POSITIVE, [...path, "coolingMult"]);
+    range(currency.dripMult, POSITIVE, [...path, "dripMult"]);
+    checkEffects(currency.effects ?? [], path);
     range(currency.drive?.unspentWeight, NON_NEGATIVE, [...path, "drive", "unspentWeight"]);
     range(currency.drive?.earnedWeight, NON_NEGATIVE, [...path, "drive", "earnedWeight"]);
     checkPrestigeRefs(currency.resetsOn, path);
@@ -371,6 +387,7 @@ function checkRules(def: GameDefinition, ctx: DefinitionValidationContext): Defi
       const behaviorPath = [...path, "behaviors", k];
       if (behavior.kind === "prestigeDrip") range(behavior.ratePerSecond, POSITIVE, [...behaviorPath, "ratePerSecond"]);
       if (behavior.kind === "autoPrestige") range(behavior.ratio, POSITIVE, [...behaviorPath, "ratio"]);
+      if (behavior.kind === "grantLevels") range(behavior.levels, POSITIVE, [...behaviorPath, "levels"]);
       if (behavior.kind === "keepLevels") range(behavior.fraction, UNIT_INTERVAL, [...behaviorPath, "fraction"]);
     });
   });

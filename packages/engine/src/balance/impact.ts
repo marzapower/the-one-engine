@@ -1,9 +1,11 @@
 import type { Engine } from "../core/engine";
+import { rateRulePrestige } from "../core/prestige-run";
+import { isUnlocked, producerPurchaseBlock, upgradePurchaseBlock } from "../core/purchase";
 import type { Prestige, Producer, Upgrade } from "../models/base";
 import { type Decimal, N, NR } from "../nums";
 import type { GameState } from "../state";
-import { horizonValueOfProducerUnit, horizonValueOfUpgrade } from "./horizon-value";
-import { anyActionAvailable, findCostPool, nextUnitCost, primaryCurrencyOf } from "./queries";
+import { type ValueOptions, horizonValueOfProducerUnit, horizonValueOfUpgrade } from "./horizon-value";
+import { anyActionAvailable, nextUnitCost, primaryCurrencyOf } from "./queries";
 
 /**
  * Purchase relevance and prestige worth — the pure rules shared by the
@@ -25,6 +27,21 @@ export interface WaitingOptions {
   horizonMs: number;
   /** m'/m ratio above which a prestige is worth taking (same meaning as `GreedyBotOptions.prestigeRatio`). */
   prestigeRatio: number;
+  /** Per-prestige rule, same meaning as `GreedyBotOptions.prestigeRules`. Missing code: ratio. */
+  prestigeRules?: Record<string, PrestigeRule>;
+  /** Same meaning as `GreedyBotOptions.ignoreUnownedTargets`. */
+  ignoreUnownedTargets?: boolean;
+  /** True when a shop policy owns the prestige-currency purchases (`GreedyBotOptions.shopPriority`): they are not "relevant purchases" and not part of the shop factor. */
+  excludePrestigeShop?: boolean;
+}
+
+/** When a profile takes a prestige: by compound-multiplier ratio, by run rate (core `rateRulePrestige`), or at a minimum delivered gain. */
+export type PrestigeRule = "ratio" | "rate" | { minGain: number };
+
+/** Options of `meaningfulPurchases`. */
+export interface ScanOptions extends ValueOptions {
+  /** Skip every purchase paid in a prestige currency (a shop policy owns them). */
+  excludePrestigeShop?: boolean;
 }
 
 /** Identity of a purchase candidate: `producer:<code>` or `upgrade:<code>`. */
@@ -55,7 +72,7 @@ export interface PurchaseValuation {
  * ranking so both read the very same numbers. `target.upgrade` / `.producer`
  * must already be quoted at the offset-shifted `bought`.
  */
-export function valuePurchase(engine: Engine, state: GameState, target: PurchaseTarget, cost: Decimal, horizonMs: number): PurchaseValuation | null {
+export function valuePurchase(engine: Engine, state: GameState, target: PurchaseTarget, cost: Decimal, horizonMs: number, opts?: ValueOptions): PurchaseValuation | null {
   if (cost.lte(0)) return null;
 
   if (target.kind === "producer") {
@@ -65,7 +82,7 @@ export function valuePurchase(engine: Engine, state: GameState, target: Purchase
   }
 
   const { upgrade } = target;
-  const value = horizonValueOfUpgrade(engine, state, upgrade, horizonMs);
+  const value = horizonValueOfUpgrade(engine, state, upgrade, horizonMs, opts);
   if (value.lte(0)) return null; // excludes effects with no impact on the primary chain
 
   // Producer-paid upgrades: the price is production itself, so express the
@@ -89,8 +106,8 @@ export function valuePurchase(engine: Engine, state: GameState, target: Purchase
  * producer-paid upgrade that does not repay the units it burns).
  * `target` is already quoted: `bought` shifted by the caller's local offsets.
  */
-export function netPurchaseValue(engine: Engine, state: GameState, target: PurchaseTarget, cost: Decimal, horizonMs: number): Decimal | null {
-  return valuePurchase(engine, state, target, cost, horizonMs)?.net ?? null;
+export function netPurchaseValue(engine: Engine, state: GameState, target: PurchaseTarget, cost: Decimal, horizonMs: number, opts?: ValueOptions): Decimal | null {
+  return valuePurchase(engine, state, target, cost, horizonMs, opts)?.net ?? null;
 }
 
 /**
@@ -106,34 +123,34 @@ export function isMeaningfulValue(state: GameState, value: Decimal, minImpact: n
 
 /**
  * Keys of the candidates that are affordable NOW and relevant, utilities
- * included. Affordability is checked first (same rules as the harness: cost
- * pool via `findCostPool`, `max` against `amount`), then the value.
+ * included. Purchasability is checked first (the core's `*PurchaseBlock`: max,
+ * lock, cost pool, affordability), then the value.
  * Utility upgrades (paid in a prestige currency, unpriced by the horizon
  * math) are always relevant when affordable: "not priced" is not "useless".
  */
-export function meaningfulPurchases(engine: Engine, state: GameState, minImpact: number, horizonMs: number): Set<PurchaseKey> {
+export function meaningfulPurchases(engine: Engine, state: GameState, minImpact: number, horizonMs: number, opts?: ScanOptions): Set<PurchaseKey> {
   const found = new Set<PurchaseKey>();
-  scanMeaningful(engine, state, minImpact, horizonMs, found);
+  scanMeaningful(engine, state, minImpact, horizonMs, found, opts);
   return found;
 }
 
 /** Early-exit twin of `meaningfulPurchases`: true as soon as one relevant candidate is found. */
-function hasMeaningfulPurchase(engine: Engine, state: GameState, minImpact: number, horizonMs: number): boolean {
-  return scanMeaningful(engine, state, minImpact, horizonMs, null);
+function hasMeaningfulPurchase(engine: Engine, state: GameState, minImpact: number, horizonMs: number, opts?: ScanOptions): boolean {
+  return scanMeaningful(engine, state, minImpact, horizonMs, null, opts);
 }
 
 /** Collects into `sink` (or stops at the first hit when `sink` is null). Returns whether anything was found. */
-function scanMeaningful(engine: Engine, state: GameState, minImpact: number, horizonMs: number, sink: Set<PurchaseKey> | null): boolean {
+function scanMeaningful(engine: Engine, state: GameState, minImpact: number, horizonMs: number, sink: Set<PurchaseKey> | null, opts?: ScanOptions): boolean {
   let any = false;
   const prestigeCurrencies = new Set(state.prestiges.map((p) => p.currencyCode));
 
   for (const producer of state.producers) {
-    const currency = state.currencies.find((c) => c.code === producer.currencyCode);
-    if (!currency) continue;
+    if (opts?.excludePrestigeShop && prestigeCurrencies.has(producer.currencyCode)) continue;
+    // Max, lock, pool and affordability: the core's purchase rules.
+    if (producerPurchaseBlock(engine, state, producer, 1) !== null) continue;
     const cost = N(nextUnitCost(engine, producer));
-    if (cost.gt(N(currency.amount))) continue;
 
-    const value = netPurchaseValue(engine, state, { kind: "producer", producer }, cost, horizonMs);
+    const value = netPurchaseValue(engine, state, { kind: "producer", producer }, cost, horizonMs, opts);
     if (value === null || !isMeaningfulValue(state, value, minImpact, horizonMs)) continue;
 
     any = true;
@@ -142,13 +159,11 @@ function scanMeaningful(engine: Engine, state: GameState, minImpact: number, hor
   }
 
   for (const upgrade of state.upgrades) {
-    if (upgrade.max && N(upgrade.amount).add(1).gt(N(upgrade.max))) continue;
-    const pool = findCostPool(state, upgrade.currencyCode);
-    if (!pool) continue;
+    if (opts?.excludePrestigeShop && prestigeCurrencies.has(upgrade.currencyCode)) continue;
+    if (upgradePurchaseBlock(engine, state, upgrade) !== null) continue;
     const cost = N(engine.costToBuyNext(upgrade, 1));
-    if (cost.gt(N(pool.amount))) continue;
 
-    const value = netPurchaseValue(engine, state, { kind: "upgrade", upgrade }, cost, horizonMs);
+    const value = netPurchaseValue(engine, state, { kind: "upgrade", upgrade }, cost, horizonMs, opts);
     const relevant = value !== null ? isMeaningfulValue(state, value, minImpact, horizonMs) : isUtilityUpgrade(engine, state, upgrade, prestigeCurrencies, cost, horizonMs);
     if (!relevant) continue;
 
@@ -190,7 +205,7 @@ interface PrestigeEvaluation {
  * (the engine applies it additively, not multiplicatively). Defensive
  * default for games with no such content.
  */
-export function evaluatePrestige(engine: Engine, state: GameState, prestige: Prestige): PrestigeEvaluation | null {
+export function evaluatePrestige(engine: Engine, state: GameState, prestige: Prestige, opts?: { skipShop?: boolean }): PrestigeEvaluation | null {
   const gain = engine.prestigeGain(state, prestige);
 
   // Mirror Engine.applyPrestiges: passive effects are driven by the
@@ -209,7 +224,7 @@ export function evaluatePrestige(engine: Engine, state: GameState, prestige: Pre
   // dwarf the passive effect. Ignoring this made the bot systematically
   // prestige LATER than optimal play.
   const spendable = prestigeCurrency ? N(prestigeCurrency.amount) : N(0);
-  mPrime = mPrime.mul(shopFactorWithBudget(engine, state, prestige.currencyCode, spendable.add(gain)));
+  if (!opts?.skipShop) mPrime = mPrime.mul(shopFactorWithBudget(engine, state, prestige.currencyCode, spendable.add(gain)));
 
   return { gain, m, mPrime };
 }
@@ -228,6 +243,7 @@ export function shopFactorWithBudget(engine: Engine, state: GameState, currencyC
 
   for (const upgrade of state.upgrades) {
     if (upgrade.currencyCode !== currencyCode) continue;
+    if (!isUnlocked(state, upgrade)) continue;
 
     let levels = N(0);
     for (let i = 0; i < 64; i++) {
@@ -257,18 +273,42 @@ export function shopFactorWithBudget(engine: Engine, state: GameState, currencyC
   return factor;
 }
 
-/**
- * The first prestige a profile with this `prestigeRatio` would take now:
- * positive gain and m'/m >= prestigeRatio (shop factor included). The
- * anti-stall branch of the bot depends on its internal clocks and is NOT
- * part of this (declared approximation for the waiting metric).
- */
-export function prestigeWorthTaking(engine: Engine, state: GameState, prestigeRatio: number): Prestige | null {
-  for (const prestige of state.prestiges) {
-    const evaluated = evaluatePrestige(engine, state, prestige);
-    if (!evaluated || evaluated.gain.lte(0) || evaluated.m.lte(0)) continue;
+/** Options of `prestigeWorthTaking` / `prestigeRuleFires`. */
+export interface PrestigeTakingOptions {
+  /** Per-prestige rule by code; a missing code means "ratio". */
+  rules?: Record<string, PrestigeRule>;
+  /** Leave the prestige-currency shop out of the m'/m ratio (a shop policy owns it). */
+  skipShop?: boolean;
+}
 
-    if (evaluated.mPrime.div(evaluated.m).gte(prestigeRatio)) return prestige;
+/**
+ * True when the profile takes `prestige` now under its rule: "ratio" (default,
+ * positive gain and m'/m >= `prestigeRatio`, shop factor included), "rate"
+ * (the core's `rateRulePrestige`) or `{ minGain }` (delivered gain >= minGain).
+ */
+export function prestigeRuleFires(engine: Engine, state: GameState, prestige: Prestige, prestigeRatio: number, opts?: PrestigeTakingOptions): boolean {
+  const rule = opts?.rules?.[prestige.code] ?? "ratio";
+
+  if (rule === "rate") return rateRulePrestige(engine, state, prestige);
+  if (typeof rule === "object") {
+    const gain = engine.prestigeGain(state, prestige);
+    return gain.gt(0) && gain.gte(rule.minGain);
+  }
+
+  const evaluated = evaluatePrestige(engine, state, prestige, { skipShop: opts?.skipShop });
+  if (!evaluated || evaluated.gain.lte(0) || evaluated.m.lte(0)) return false;
+  return evaluated.mPrime.div(evaluated.m).gte(prestigeRatio);
+}
+
+/**
+ * The first prestige a profile with this `prestigeRatio` (and, optionally,
+ * per-prestige rules) would take now. The anti-stall branch of the bot
+ * depends on its internal clocks and is NOT part of this (declared
+ * approximation for the waiting metric).
+ */
+export function prestigeWorthTaking(engine: Engine, state: GameState, prestigeRatio: number, opts?: PrestigeTakingOptions): Prestige | null {
+  for (const prestige of state.prestiges) {
+    if (prestigeRuleFires(engine, state, prestige, prestigeRatio, opts)) return prestige;
   }
   return null;
 }
@@ -282,6 +322,6 @@ export function prestigeWorthTaking(engine: Engine, state: GameState, prestigeRa
  */
 export function isWaiting(engine: Engine, state: GameState, opts: WaitingOptions): boolean {
   if (opts.minImpact <= 0) return !anyActionAvailable(engine, state);
-  if (hasMeaningfulPurchase(engine, state, opts.minImpact, opts.horizonMs)) return false;
-  return prestigeWorthTaking(engine, state, opts.prestigeRatio) === null;
+  if (hasMeaningfulPurchase(engine, state, opts.minImpact, opts.horizonMs, opts)) return false;
+  return prestigeWorthTaking(engine, state, opts.prestigeRatio, { rules: opts.prestigeRules, skipShop: opts.excludePrestigeShop }) === null;
 }

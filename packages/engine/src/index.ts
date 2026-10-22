@@ -39,6 +39,7 @@ export type {
   Prestige,
   Effect,
   Target,
+  Unlock,
   GrowthFunction,
   Coded,
   Ownable,
@@ -58,7 +59,7 @@ export type { GameRules, SaturationRules } from "./rules";
 // ============================================================================
 // State
 // ============================================================================
-export type { GameState, EngineStats, StageMetrics, BootstrapReport } from "./state";
+export type { GameState, PrestigeRun, EngineStats, StageMetrics, BootstrapReport } from "./state";
 export { createInitialState } from "./state";
 
 // ============================================================================
@@ -91,6 +92,11 @@ export { costToBuyNext, maxBuyableAmount, costToBuy } from "./core/pricing";
 export { supportRatio, capacityPush, dragFactor, coolingDelta, type SupportInputs } from "./core/saturation";
 export { DEFAULT_PRESTIGE_DRIVE, prestigeDrive, prestigeGainMultiplier, deliveredPrestigeGain } from "./core/prestige-gain";
 export { collectModifiers, applyModifiers, isTransientTargetPath, type Modifier } from "./core/modifiers";
+
+export { foldCurrencyChannel } from "./core/prestige-gain";
+export { isUnlocked, findCostPool, upgradePurchaseBlock, buyUpgrade, producerPurchaseBlock, buyProducer, type PurchaseBlock } from "./core/purchase";
+export { resolveTargetCode, continuousPrestigeGain, prestigeRunRate, rateRulePrestige, prestigesRestartedBy } from "./core/prestige-run";
+export { levelsAfterPrestige } from "./core/behaviors";
 
 // ============================================================================
 // Offline simulation

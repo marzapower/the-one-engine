@@ -268,3 +268,76 @@ describe("parseDataPack", () => {
     expect(() => parseDataPack("invalid")).not.toThrow();
   });
 });
+
+describe("schema — evolutive fields", () => {
+  const base = () => ({ ...createInitialState(), lastTick: undefined });
+
+  it("accepts prestigeRuns, unlock, select, grantOnPurchase, currency effects and the new behaviors", () => {
+    const state = {
+      ...base(),
+      prestigeRuns: { frag: { elapsedMs: 10, earnedAtStart: 0, peakRate: "1e5" } },
+      currencies: [{ code: "if", name: "if", amount: 0, dripMult: 1, resetsEarnedOn: ["frag"], effects: [] }],
+      producers: [
+        {
+          code: "e1",
+          name: "e1",
+          amount: 0,
+          bought: 0,
+          currencyCode: "if",
+          scaling: { base: 1, coeff: 0, func: "linear", scaleOn: "self" },
+          produces: [],
+          unlock: { kind: "currency", code: "if", field: "earned", gt: 0 },
+        },
+      ],
+      upgrades: [
+        {
+          code: "u",
+          name: "u",
+          amount: 0,
+          bought: 0,
+          currencyCode: "if",
+          scaling: { base: 1, coeff: 0, func: "linear", scaleOn: "self" },
+          grantOnPurchase: true,
+          unlock: { kind: "upgrade", code: "x", field: "bought", gt: 0 },
+          effects: [
+            {
+              stage: 0,
+              target: { kind: "producer", code: "e1", path: "produces.*.persec", select: { highestOwnedOf: ["e1"] } },
+              type: "mult",
+              func: { base: 1, coeff: 0, func: "linear", scaleOn: "self" },
+            },
+          ],
+          behaviors: [
+            { kind: "autoPrestige", prestigeCode: "frag", rule: "rate" },
+            { kind: "autobuyUpgrades", upgradeCodes: ["u"] },
+            { kind: "keepLevels", prestigeCode: "frag", fraction: 1, upgradeCodes: ["u"] },
+            { kind: "grantLevels", prestigeCode: "frag", upgradeCode: "u", levels: 2 },
+          ],
+        },
+      ],
+    };
+    const result = parseGameState(state);
+    expect(result.errors).toEqual([]);
+    expect(result.valid).toBe(true);
+  });
+
+  it("rejects a malformed unlock and prestigeRun", () => {
+    expect(parseGameState({ ...base(), prestigeRuns: { a: { elapsedMs: "x" } } }).valid).toBe(false);
+    const bad = {
+      ...base(),
+      producers: [
+        {
+          code: "e",
+          name: "e",
+          amount: 0,
+          bought: 0,
+          currencyCode: "c",
+          scaling: { base: 1, coeff: 0, func: "linear", scaleOn: "self" },
+          produces: [],
+          unlock: { kind: "x", code: "c", field: "amount", gt: 0 },
+        },
+      ],
+    };
+    expect(parseGameState(bad).valid).toBe(false);
+  });
+});

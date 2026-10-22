@@ -3,6 +3,7 @@ import type { Coded, Currency, Effect, Producer, Target, Upgrade } from "../../m
 import { Decimal, N, NR, type Numerus } from "../../nums";
 import type { GameState } from "../../state";
 import { computeGrowthFunction } from "../growth";
+import { resolveTargetCode } from "../target-select";
 import type { CompiledAccessor, EffectResolver, EngineServices, EntityRegistry, MutationEvent, StateAdapter, TimeProvider } from "./types";
 
 export class DefaultTimeProvider implements TimeProvider {
@@ -58,7 +59,7 @@ export class DefaultStateAdapter implements StateAdapter {
   }
 
   private keyFor(target: Target): string {
-    return `${target.kind}:${target.code}:${target.path}`;
+    return `${target.kind}:${target.code}:${target.path}:${target.select ? target.select.highestOwnedOf.join(",") : ""}`;
   }
 
   private accessorFor(target: Target): CompiledAccessor | undefined {
@@ -160,6 +161,9 @@ export class DefaultStateAdapter implements StateAdapter {
         if ("persec" in thing) thing.persec = ZERO;
       }
     }
+    for (const currency of state.currencies) {
+      if (currency.resetsEarnedOn?.includes(prestigeCode)) currency.earned = ZERO;
+    }
     this.fire("after", { type: "resetForPrestige", value: prestigeCode });
   }
 }
@@ -167,7 +171,7 @@ export class DefaultStateAdapter implements StateAdapter {
 export class DefaultEffectResolver implements EffectResolver {
   private accessorCache = new Map<string, CompiledAccessor>();
   private keyFor(target: Target): string {
-    return `${target.kind}:${target.code}:${target.path}`;
+    return `${target.kind}:${target.code}:${target.path}:${target.select ? target.select.highestOwnedOf.join(",") : ""}`;
   }
 
   apply(state: GameState, effect: Effect, amount: Numerus, services: EngineServices): void {
@@ -248,10 +252,13 @@ export class DefaultEntityRegistry implements EntityRegistry {
     const midSegments = segments.slice(0, Math.max(segments.length - 1, 0));
     const kind = target.kind;
     const code = target.code;
+    const select = target.select;
 
     const resolve = (state: GameState): { objects: unknown[]; key: string } | undefined => {
       this.refresh(state);
-      const root = this.getByCode(state, kind, code) as unknown;
+      const resolvedCode = select ? resolveTargetCode(state, target) : code;
+      if (resolvedCode === null) return undefined;
+      const root = this.getByCode(state, kind, resolvedCode) as unknown;
       if (!root) return undefined;
 
       let current: unknown[] = [root];

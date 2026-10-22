@@ -1,4 +1,5 @@
 import { type Currency, type Prestige, type Producer, type Upgrade } from "./models/base";
+import type { Numerus } from "./nums";
 import type { GameRules } from "./rules";
 
 /** Timing of one tick stage, aggregated over the ticks run so far. */
@@ -68,6 +69,15 @@ export interface GameState {
   prestiges: Prestige[];
   /** Optional data-driven mechanics. Absent means producers, upgrades and prestiges only. */
   rules?: GameRules;
+  /** Per-prestige run clock (see `core/prestige-run.ts`). Created lazily; hosts need not save it. */
+  prestigeRuns?: Record<string, PrestigeRun>;
+}
+
+/** The current run of one prestige: time elapsed, earned at its start, best rate seen. */
+export interface PrestigeRun {
+  elapsedMs: number;
+  earnedAtStart: Numerus;
+  peakRate: Numerus;
 }
 
 /** An empty state: zeroed stats, no entities, no rules. */

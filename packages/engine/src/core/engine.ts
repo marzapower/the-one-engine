@@ -1,15 +1,17 @@
 import { MAX_CATCHUP_MS_PER_TICK, MAX_OFFLINE_MS, MOVING_AVG_WINDOW, TICK_MS_INTERVAL } from "../constants";
-import type { Buyable, Currency, Effect, GrowthFunction, Prestige, Producer, Upgrade } from "../models/base";
-import { type Decimal, type GenericNumberInput, N, NR, type Numerus } from "../nums";
+import type { Buyable, Currency, Effect, GrowthFunction, Prestige, Producer, Unlock, Upgrade } from "../models/base";
+import { Decimal, type GenericNumberInput, N, NR, type Numerus } from "../nums";
 import { type GameState, type StageMetrics } from "../state";
-import { applyPrestigeDrips, keptLevelsFraction, runAutoPrestiges, runUpgradeAutobuyers } from "./behaviors";
+import { applyPrestigeDrips, levelsAfterPrestige, runAutoPrestiges, runUpgradeAutobuyers } from "./behaviors";
 import { DefaultEffectResolver, DefaultEntityRegistry, DefaultStateAdapter, DefaultTimeProvider, consoleLogger } from "./di/defaults";
 import type { EffectResolver, EngineDependencies, EngineServices, Logger, TimeProvider } from "./di/types";
 import { computeGrowthFunction } from "./growth";
 import { type Modifier, applyModifiers, collectModifiers, isTransientTargetPath } from "./modifiers";
 import { type OfflineReport, offlineTickLength } from "./offline";
 import { deliveredPrestigeGain, prestigeDrive, prestigeGainMultiplier } from "./prestige-gain";
+import { advancePrestigeRuns, reinitPrestigeRuns } from "./prestige-run";
 import { costToBuy, costToBuyNext, maxBuyableAmount } from "./pricing";
+import { type PurchaseBlock, buyProducer, buyUpgrade, isUnlocked, producerPurchaseBlock, upgradePurchaseBlock } from "./purchase";
 import { EffectRegistry } from "./registries/effect";
 import { GrowthRegistry } from "./registries/growth";
 import { StageRegistry } from "./registries/stage";
@@ -299,18 +301,16 @@ export class Engine {
       prestigeCurrency.earned = NR(N(prestigeCurrency.earned ?? 0).add(gain));
     }
 
-    const fraction = keptLevelsFraction(state, prestige.code);
     const keptLevels = new Map<string, Numerus>();
-    if (fraction > 0) {
-      for (const upgrade of state.upgrades) {
-        if (upgrade.resetsOn?.includes(prestige.code) && N(upgrade.bought).gt(0)) {
-          keptLevels.set(upgrade.code, NR(N(upgrade.bought).mul(fraction).floor()));
-        }
-      }
+    for (const upgrade of state.upgrades) {
+      if (!upgrade.resetsOn?.includes(prestige.code)) continue;
+      const levels = levelsAfterPrestige(state, prestige.code, upgrade);
+      if (levels.gt(0)) keptLevels.set(upgrade.code, NR(levels));
     }
 
     this.services.adapter.resetForPrestige(state, prestige.code);
     this.applyPostPrestigeGrants(state, prestige.code, keptLevels);
+    reinitPrestigeRuns(this, state, prestige.code);
 
     this.onPrestigeHook?.(state, prestige);
     return true;
@@ -341,6 +341,33 @@ export class Engine {
       upgrade.bought = levels;
       upgrade.amount = levels;
     }
+  }
+
+  // --- purchases ---------------------------------------------------------
+
+  /** Buys one level of an upgrade (see `core/purchase.ts`). False when blocked. */
+  public buyUpgrade(state: GameState, code: string): boolean {
+    return buyUpgrade(this, state, code);
+  }
+
+  /** Buys `amount` units of a producer (see `core/purchase.ts`). False when blocked. */
+  public buyProducer(state: GameState, code: string, amount = 1): boolean {
+    return buyProducer(this, state, code, amount);
+  }
+
+  /** True when the entity's `unlock` gate (if any) is open. */
+  public isUnlocked(state: GameState, entity: { unlock?: Unlock }): boolean {
+    return isUnlocked(state, entity);
+  }
+
+  /** Why the upgrade's next level cannot be bought, or null. */
+  public upgradePurchaseBlock(state: GameState, upgrade: Upgrade): PurchaseBlock | null {
+    return upgradePurchaseBlock(this, state, upgrade);
+  }
+
+  /** Why `amount` units of the producer cannot be bought, or null. */
+  public producerPurchaseBlock(state: GameState, producer: Producer, amount = 1): PurchaseBlock | null {
+    return producerPurchaseBlock(this, state, producer, amount);
   }
 
   // --- saturation ----------------------------------------------------------
@@ -540,8 +567,9 @@ export class Engine {
     }
   }
 
-  /** Runs, in order, the upgrade autobuyers, the prestige drips and the auto-prestige checks. */
+  /** Runs, in order, the prestige run clocks, the upgrade autobuyers, the prestige drips and the auto-prestige checks. */
   public runAutomation(state: GameState, elapsed: number): void {
+    advancePrestigeRuns(this, state, elapsed);
     runUpgradeAutobuyers(this, state);
     applyPrestigeDrips(this, state, elapsed);
     runAutoPrestiges(this, state);

@@ -1,11 +1,12 @@
 import { silentLogger } from "../core/di/defaults";
 import { Engine } from "../core/engine";
+import { buyProducer, buyUpgrade } from "../core/purchase";
 import { type Decimal, N, NR } from "../nums";
 import type { GameState } from "../state";
 import { MockTimeProvider } from "../testing/MockTimeProvider";
 import type { ResolvedClickable } from "./definition";
 import { MetricsCollector } from "./metrics";
-import { findCostPool, nextUnitCost } from "./queries";
+import { nextUnitCost } from "./queries";
 import { DEFAULT_HARNESS_PARAMS } from "./types";
 import type { BalanceReport, BotIntent, BotPolicy, HarnessParams, SimAction } from "./types";
 
@@ -158,15 +159,8 @@ function applyBuyProducer(state: GameState, engine: Engine, code: string, amount
   const producer = state.producers.find((p) => p.code === code);
   if (!producer) return undefined;
 
-  const currency = state.currencies.find((c) => c.code === producer.currencyCode);
-  if (!currency) return undefined;
-
   const cost = engine.costToBuyNext(producer, amount);
-  if (N(cost).gt(N(currency.amount))) return undefined;
-
-  currency.amount = NR(N(currency.amount).sub(N(cost)));
-  producer.bought = NR(N(producer.bought).add(amount));
-  producer.amount = NR(N(producer.amount).add(amount));
+  if (!buyProducer(engine, state, code, amount)) return undefined;
 
   return { kind: "buyProducer", code, amount, cost, tSimMs };
 }
@@ -174,18 +168,9 @@ function applyBuyProducer(state: GameState, engine: Engine, code: string, amount
 function applyBuyUpgrade(state: GameState, engine: Engine, code: string, tSimMs: number): SimAction | undefined {
   const upgrade = state.upgrades.find((u) => u.code === code);
   if (!upgrade) return undefined;
-  if (upgrade.max && N(upgrade.amount).add(1).gt(N(upgrade.max))) return undefined;
-
-  // Upgrades can be paid in a currency OR in producer units (their `amount` stock).
-  const pool = findCostPool(state, upgrade.currencyCode);
-  if (!pool) return undefined;
 
   const cost = engine.costToBuyNext(upgrade, 1);
-  if (N(cost).gt(N(pool.amount))) return undefined;
-
-  pool.amount = NR(N(pool.amount).sub(N(cost)));
-  upgrade.bought = NR(N(upgrade.bought).add(1));
-  upgrade.amount = NR(N(upgrade.amount).add(1));
+  if (!buyUpgrade(engine, state, code)) return undefined;
 
   return { kind: "buyUpgrade", code, cost, tSimMs };
 }

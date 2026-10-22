@@ -25,19 +25,21 @@ export function prestigeDrive(currency: Pick<Currency, "amount" | "earned" | "dr
 }
 
 /**
- * Folds every bought upgrade's effect targeting the prestige currency's
- * `gainMult` path onto its base value (default 1), using the effect
- * registry's `apply` so custom effect types compose correctly.
+ * Folds every bought upgrade's effect targeting `channel` of the currency
+ * `currencyCode`, then every currency's own `effects` on it (driven by that
+ * currency's `amount`), onto the currency's base value for that channel (default 1),
+ * using the effect registry's `apply` so custom effect types compose correctly.
+ * Shared by every currency channel (`gainMult`, `dripMult`).
  */
-export function prestigeGainMultiplier(state: GameState, prestige: Prestige, services: EngineServices): Decimal {
-  const currency = state.currencies.find((c) => c.code === prestige.currencyCode);
-  let mult = N(currency?.gainMult ?? 1);
+export function foldCurrencyChannel(state: GameState, currencyCode: string, channel: "gainMult" | "dripMult", services: EngineServices): Decimal {
+  const currency = state.currencies.find((c) => c.code === currencyCode);
+  let mult = N(currency?.[channel] ?? 1);
 
   for (const upgrade of state.upgrades) {
     if (N(upgrade.bought).lte(0)) continue;
     for (const effect of upgrade.effects) {
       const target = effect.target;
-      if (target.kind !== "currency" || target.code !== prestige.currencyCode || target.path !== "gainMult") continue;
+      if (target.kind !== "currency" || target.code !== currencyCode || target.path !== channel) continue;
       const effectDef = services.effectTypes.lookup(effect.type);
       if (!effectDef) {
         services.logger.error(`Effect type not found: "${effect.type}". Skipping modifier.`);
@@ -48,7 +50,26 @@ export function prestigeGainMultiplier(state: GameState, prestige: Prestige, ser
     }
   }
 
+  // Then currencies' own effects, driven by their `amount` (same order as collectModifiers).
+  for (const source of state.currencies) {
+    for (const effect of source.effects ?? []) {
+      const target = effect.target;
+      if (target.kind !== "currency" || target.code !== currencyCode || target.path !== channel) continue;
+      const effectDef = services.effectTypes.lookup(effect.type);
+      if (!effectDef) {
+        services.logger.error(`Effect type not found: "${effect.type}". Skipping modifier.`);
+        continue;
+      }
+      mult = N(effectDef.apply(mult, computeGrowthFunction(effect.func, source.amount, services.growths)));
+    }
+  }
+
   return mult;
+}
+
+/** Folds the prestige currency's `gainMult` channel (see `foldCurrencyChannel`). */
+export function prestigeGainMultiplier(state: GameState, prestige: Prestige, services: EngineServices): Decimal {
+  return foldCurrencyChannel(state, prestige.currencyCode, "gainMult", services);
 }
 
 /**
