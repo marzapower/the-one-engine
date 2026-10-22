@@ -1,7 +1,8 @@
 import type { Engine } from "../core/engine";
 import { type Decimal, N } from "../nums";
 import type { GameState } from "../state";
-import { anyActionAvailable } from "./queries";
+import { GREEDY_DEFAULTS } from "./greedy-bot";
+import { type WaitingOptions, assertValidImpactParams, isWaiting } from "./impact";
 import { DEFAULT_HARNESS_PARAMS } from "./types";
 import type { BalanceReport, DeadTimeWindow, DecadeTime, DecisionDensityWindow, MilestoneEvent, PrestigeCycle, SeriesSample, SimAction } from "./types";
 
@@ -39,7 +40,20 @@ export class MetricsCollector {
   /** Engine used to price dead-time availability (see `anyActionAvailable`). */
   private readonly engine: Engine;
 
-  constructor(engine: Engine, codes: MetricsCodes = {}, detectors: MilestoneDetector[] = []) {
+  /** Resolved options of the waiting metric (see `isWaiting`). */
+  private readonly waiting: WaitingOptions;
+
+  /**
+   * `waiting` decides what counts as dead time. Default (`minImpact` 0):
+   * the historical "nothing is available" metric. With `minImpact` > 0 a
+   * sample is waiting when nothing relevant to that profile is available.
+   * The options are fixed for the whole run: a `BotDefinition` whose phases
+   * change threshold or horizon is measured with the values given here.
+   * Invalid `minImpact` / `horizonMs` throw at construction.
+   */
+  constructor(engine: Engine, codes: MetricsCodes = {}, detectors: MilestoneDetector[] = [], waiting?: WaitingOptions) {
+    this.waiting = waiting ?? { minImpact: 0, horizonMs: GREEDY_DEFAULTS.horizonMs, prestigeRatio: GREEDY_DEFAULTS.prestigeRatio };
+    assertValidImpactParams(this.waiting.minImpact, this.waiting.horizonMs);
     this.overflowCode = codes.overflowCurrencyCode;
     this.trackedProducerCode = codes.trackedProducerCode;
     this.pendingDetectors = [...detectors];
@@ -184,7 +198,7 @@ export class MetricsCollector {
   }
 
   private detectDeadTime(state: GameState, tSimMs: number): void {
-    const dead = !anyActionAvailable(this.engine, state);
+    const dead = isWaiting(this.engine, state, this.waiting);
     if (dead) {
       this.currentDeadWindowStart ??= tSimMs;
     } else if (this.currentDeadWindowStart !== null) {

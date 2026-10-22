@@ -1,9 +1,10 @@
 import type { Engine } from "../core/engine";
 import { DEFAULT_PRESTIGE_DRIVE } from "../core/prestige-gain";
-import type { Prestige, Producer, Upgrade } from "../models/base";
+import type { Producer, Upgrade } from "../models/base";
 import { type Decimal, N, NR } from "../nums";
 import type { GameState } from "../state";
-import { horizonValueOfProducerUnit, horizonValueOfUpgrade } from "./horizon-value";
+import { horizonValueOfUpgrade } from "./horizon-value";
+import { type PurchaseKey, assertValidImpactParams, evaluatePrestige, meaningfulPurchases, prestigeWorthTaking, valuePurchase } from "./impact";
 import { primaryCurrencyOf } from "./queries";
 import type { BotContext, BotIntent, BotPolicy } from "./types";
 
@@ -28,6 +29,28 @@ export interface GreedyBotOptions {
    * unspent stock a weight). Default Infinity — the naive spender.
    */
   maxPassiveLossPct?: number;
+  /**
+   * Visit gate (fraction of the primary production over `horizonMs`, 0.01 =
+   * 1%). With a value > 0 the bot only "visits the game" to buy when at least
+   * one affordable purchase is worth at least this much; on a visit it buys
+   * everything it normally would, relevant candidates first. It is a gate on
+   * VISITS, not a per-item filter: a per-item filter blocks cascades (cheap
+   * early purchases that are individually irrelevant but unlock the next
+   * tier — in The One it produced zero prestiges in 8h). Impact ignores
+   * price and payback time; it is an estimate of productive relevance.
+   * Prestige by ratio and utility upgrades are not affected (an affordable
+   * utility upgrade opens the gate even when `maxPassiveLossPct` then skips
+   * it — the visit still buys everything else). 0 (default)
+   * disables the gate: decisions are identical to a bot without this option.
+   */
+  minPurchaseImpact?: number;
+  /**
+   * With the gate on: if nothing relevant showed up for this long (ms) since
+   * the last purchase, make a catch-up visit buying as usual, so a long
+   * drought of "relevant" things never freezes the run for good. Default
+   * Infinity (never). Ignored while `minPurchaseImpact` is 0.
+   */
+  maxWaitMs?: number;
 }
 
 /** GreedyBotOptions with every default resolved — the bot's live, mutable knob set. */
@@ -39,19 +62,12 @@ export const GREEDY_DEFAULTS: ResolvedGreedyBotOptions = {
   prestigeRatio: 1.5,
   stallPrestigeAfterMs: 300_000,
   maxPassiveLossPct: Number.POSITIVE_INFINITY,
+  minPurchaseImpact: 0,
+  maxWaitMs: Number.POSITIVE_INFINITY,
 };
 
 /** Safety cap on purchase intents per decision point, matching HarnessParams.maxActionsPerDecision default. */
 const MAX_INTENTS_PER_DECISION = 50;
-
-interface PrestigeEvaluation {
-  /** Prestige-currency gain from performing this prestige now. */
-  gain: Decimal;
-  /** Current compound multiplier of the prestige's effects, at the current prestige-currency drive. */
-  m: Decimal;
-  /** Compound multiplier if the prestige were performed now (prestige-currency drive + gain). */
-  mPrime: Decimal;
-}
 
 interface PurchaseCandidate {
   kind: "producer" | "upgrade";
@@ -75,6 +91,9 @@ export class GreedyBot implements BotPolicy {
   /** Sim time (ms) of the last decision that produced at least one intent. */
   private lastActionTsSimMs = 0;
 
+  /** Sim time (ms) of the last decision that produced at least one purchase (feeds the catch-up visit). */
+  private lastPurchaseTsSimMs = 0;
+
   /** Peak log10(primary) seen so far, and when it last moved by >= 0.1 decades. */
   private peakPrimaryLog = 0;
   private lastProgressTsSimMs = 0;
@@ -91,6 +110,17 @@ export class GreedyBot implements BotPolicy {
    * `undefined` entries are ignored (they mean "keep the current value").
    */
   setOptions(partial: GreedyBotOptions): void {
+    // Validate before mutating anything: a bad value fails here, not mid-run.
+    const next = { ...this.options };
+    for (const key of Object.keys(GREEDY_DEFAULTS) as (keyof ResolvedGreedyBotOptions)[]) {
+      const value = partial[key];
+      if (value !== undefined) next[key] = value;
+    }
+    assertValidImpactParams(next.minPurchaseImpact, next.horizonMs);
+    if (Number.isNaN(next.maxWaitMs) || next.maxWaitMs < 0) {
+      throw new Error(`maxWaitMs must be a number >= 0 (got ${String(next.maxWaitMs)})`);
+    }
+
     for (const key of Object.keys(GREEDY_DEFAULTS) as (keyof ResolvedGreedyBotOptions)[]) {
       const value = partial[key];
       if (value !== undefined) this.options[key] = value;
@@ -121,9 +151,10 @@ export class GreedyBot implements BotPolicy {
     }
 
     // 2. Otherwise, greedily buy the best-payback affordable options.
-    const buyIntents = this.planPurchases(engine, state);
+    const buyIntents = this.planVisit(engine, state, tSimMs);
     if (buyIntents.length > 0) {
       this.lastActionTsSimMs = tSimMs;
+      this.lastPurchaseTsSimMs = tSimMs;
       return buyIntents;
     }
 
@@ -158,107 +189,36 @@ export class GreedyBot implements BotPolicy {
     this.lastProgressTsSimMs = tSimMs;
   }
 
-  private checkPrestigeRatio(engine: Engine, state: GameState): BotIntent | null {
-    for (const prestige of state.prestiges) {
-      const evaluated = this.evaluatePrestige(engine, state, prestige);
-      if (!evaluated || evaluated.gain.lte(0) || evaluated.m.lte(0)) continue;
+  /**
+   * Purchase step of a decision. Gate off (`minPurchaseImpact` 0): the plain
+   * greedy plan, no extra calls. Gate on: a relevant affordable purchase
+   * opens a visit that buys relevant candidates first and then everything
+   * as usual; otherwise only a catch-up visit (`maxWaitMs` since the last
+   * purchase) plans anything.
+   */
+  private planVisit(engine: Engine, state: GameState, tSimMs: number): BotIntent[] {
+    const { minPurchaseImpact, horizonMs, maxWaitMs } = this.options;
+    if (minPurchaseImpact <= 0) return this.planPurchases(engine, state);
 
-      const ratio = evaluated.mPrime.div(evaluated.m);
-      if (ratio.gte(this.options.prestigeRatio)) {
-        return { kind: "prestige", code: prestige.code };
-      }
-    }
-    return null;
+    const relevant = meaningfulPurchases(engine, state, minPurchaseImpact, horizonMs);
+    if (relevant.size > 0) return this.planPurchases(engine, state, relevant);
+    if (tSimMs - this.lastPurchaseTsSimMs >= maxWaitMs) return this.planPurchases(engine, state);
+    return [];
+  }
+
+  private checkPrestigeRatio(engine: Engine, state: GameState): BotIntent | null {
+    const prestige = prestigeWorthTaking(engine, state, this.options.prestigeRatio);
+    return prestige ? { kind: "prestige", code: prestige.code } : null;
   }
 
   private checkStallPrestige(engine: Engine, state: GameState): BotIntent | null {
     for (const prestige of state.prestiges) {
-      const evaluated = this.evaluatePrestige(engine, state, prestige);
+      const evaluated = evaluatePrestige(engine, state, prestige);
       if (evaluated?.gain.gte(1)) {
         return { kind: "prestige", code: prestige.code };
       }
     }
     return null;
-  }
-
-  /**
-   * Evaluates a prestige: `gain` mirrors `Engine.performPrestige`'s delivered
-   * gain (via `engine.prestigeGain`); `m`/`m'` = compound multiplier of the
-   * prestige's effects, evaluated at the current and post-gain prestige
-   * currency drive respectively (mirrors `Engine.applyPrestiges`, which
-   * multiplies the target by each effect's `engine.growthValue(effect.func,
-   * drive)` in sequence).
-   *
-   * Assumption: only "mult"-type effects are composed into m/m' — an "add"
-   * effect on a prestige doesn't have a well-defined "compound multiplier"
-   * (the engine applies it additively, not multiplicatively). Defensive
-   * default for games with no such content.
-   */
-  private evaluatePrestige(engine: Engine, state: GameState, prestige: Prestige): PrestigeEvaluation | null {
-    const gain = engine.prestigeGain(state, prestige);
-
-    // Mirror Engine.applyPrestiges: passive effects are driven by the
-    // prestige currency's `drive`. Weights sum to 1, so a prestige — which
-    // raises amount AND earned by `gain` — raises the drive by `gain`.
-    const prestigeCurrency = state.currencies.find((c) => c.code === prestige.currencyCode);
-    const driveBefore = prestigeCurrency ? engine.prestigeDrive(prestigeCurrency) : N(0);
-    const driveAfter = driveBefore.add(gain);
-
-    const multEffects = prestige.effects.filter((effect) => effect.type === "mult");
-    const m = multEffects.reduce((acc, effect) => acc.mul(engine.growthValue(effect.func, NR(driveBefore))), N(1));
-    let mPrime = multEffects.reduce((acc, effect) => acc.mul(engine.growthValue(effect.func, NR(driveAfter))), N(1));
-
-    // Shop-aware valuation: the post-prestige budget (spendable amount +
-    // gain) can buy levels of prestige-currency upgrades whose multipliers
-    // dwarf the passive effect. Ignoring this made the bot systematically
-    // prestige LATER than optimal play.
-    const spendable = prestigeCurrency ? N(prestigeCurrency.amount) : N(0);
-    mPrime = mPrime.mul(this.shopFactorWithBudget(engine, state, prestige.currencyCode, spendable.add(gain)));
-
-    return { gain, m, mPrime };
-  }
-
-  /**
-   * Compound multiplier obtainable by greedily buying levels of upgrades paid
-   * in `currencyCode`, within `budget`. Only "mult" effects on PRODUCTION
-   * channels (persec/persecDelta targets) are composed — a mult on a
-   * non-production channel (e.g. capacityMult, gainMult) is not production
-   * and counting it inflated mPrime, making the bot prestige early whenever
-   * such an upgrade sat affordable-but-unbought. Bounded to 64 levels.
-   */
-  private shopFactorWithBudget(engine: Engine, state: GameState, currencyCode: string, budget: Decimal): Decimal {
-    let factor = N(1);
-    let remaining = budget;
-
-    for (const upgrade of state.upgrades) {
-      if (upgrade.currencyCode !== currencyCode) continue;
-
-      let levels = N(0);
-      for (let i = 0; i < 64; i++) {
-        const boughtNow = N(upgrade.bought).add(levels);
-        if (upgrade.max !== undefined && boughtNow.gte(N(upgrade.max))) break;
-
-        const quoted: Upgrade = { ...upgrade, bought: NR(boughtNow) };
-        const cost = N(engine.costToBuyNext(quoted, 1));
-        if (cost.lte(0) || cost.gt(remaining)) break;
-
-        let marginal = N(1);
-        for (const effect of upgrade.effects) {
-          if (effect.type !== "mult") continue;
-          if (!effect.target.path.includes("persec")) continue;
-          const before = engine.growthValue(effect.func, NR(boughtNow));
-          if (before.lte(0)) continue;
-          marginal = marginal.mul(engine.growthValue(effect.func, NR(boughtNow.add(1))).div(before));
-        }
-        if (marginal.lte(1)) break;
-
-        remaining = remaining.sub(cost);
-        factor = factor.mul(marginal);
-        levels = levels.add(1);
-      }
-    }
-
-    return factor;
   }
 
   /**
@@ -271,8 +231,12 @@ export class GreedyBot implements BotPolicy {
    * A candidate that's the current best but unaffordable is permanently
    * excluded for the rest of this decision point (the local budget only
    * shrinks, so it can never become affordable again this round).
+   *
+   * With `priority`, a first pass is restricted to those keys and a second,
+   * unrestricted pass follows (the usual plan), sharing budgets, offsets and
+   * exclusions: relevant candidates come first, then everything else.
    */
-  private planPurchases(engine: Engine, state: GameState): BotIntent[] {
+  private planPurchases(engine: Engine, state: GameState, priority?: Set<PurchaseKey>): BotIntent[] {
     const intents: BotIntent[] = [];
     const budgets = new Map<string, Decimal>();
     const producerOffsets = new Map<string, Decimal>();
@@ -289,27 +253,32 @@ export class GreedyBot implements BotPolicy {
       return budget;
     };
 
-    while (intents.length < MAX_INTENTS_PER_DECISION) {
-      const candidate = this.pickBestCandidate(engine, state, producerOffsets, upgradeOffsets, excluded);
-      if (!candidate) break;
+    const greedyPass = (allowed?: Set<PurchaseKey>): void => {
+      while (intents.length < MAX_INTENTS_PER_DECISION) {
+        const candidate = this.pickBestCandidate(engine, state, producerOffsets, upgradeOffsets, excluded, allowed);
+        if (!candidate) break;
 
-      const budget = getBudget(candidate.currencyCode);
-      if (budget.gte(candidate.cost)) {
-        budgets.set(candidate.currencyCode, budget.sub(candidate.cost));
+        const budget = getBudget(candidate.currencyCode);
+        if (budget.gte(candidate.cost)) {
+          budgets.set(candidate.currencyCode, budget.sub(candidate.cost));
 
-        if (candidate.kind === "producer") {
-          const offset = producerOffsets.get(candidate.code) ?? N(0);
-          producerOffsets.set(candidate.code, offset.add(1));
-          intents.push({ kind: "buyProducer", code: candidate.code, amount: 1 });
+          if (candidate.kind === "producer") {
+            const offset = producerOffsets.get(candidate.code) ?? N(0);
+            producerOffsets.set(candidate.code, offset.add(1));
+            intents.push({ kind: "buyProducer", code: candidate.code, amount: 1 });
+          } else {
+            const offset = upgradeOffsets.get(candidate.code) ?? N(0);
+            upgradeOffsets.set(candidate.code, offset.add(1));
+            intents.push({ kind: "buyUpgrade", code: candidate.code });
+          }
         } else {
-          const offset = upgradeOffsets.get(candidate.code) ?? N(0);
-          upgradeOffsets.set(candidate.code, offset.add(1));
-          intents.push({ kind: "buyUpgrade", code: candidate.code });
+          excluded.add(`${candidate.kind}:${candidate.code}`);
         }
-      } else {
-        excluded.add(`${candidate.kind}:${candidate.code}`);
       }
-    }
+    };
+
+    if (priority) greedyPass(priority);
+    greedyPass();
 
     this.planUtilityPurchases(engine, state, intents, getBudget, budgets, upgradeOffsets);
 
@@ -391,37 +360,40 @@ export class GreedyBot implements BotPolicy {
     return 1 - after.div(before).toNumber();
   }
 
-  /** Scans all producers and upgrades for the highest positive-efficiency, non-excluded candidate. */
+  /**
+   * Scans all producers and upgrades for the highest positive-efficiency,
+   * non-excluded candidate (restricted to `allowed` keys when given).
+   * Values and efficiency come from `valuePurchase`, shared with the metric.
+   */
   private pickBestCandidate(
     engine: Engine,
     state: GameState,
     producerOffsets: Map<string, Decimal>,
     upgradeOffsets: Map<string, Decimal>,
     excluded: Set<string>,
+    allowed?: Set<PurchaseKey>,
   ): PurchaseCandidate | null {
     let best: PurchaseCandidate | null = null;
 
     for (const producer of state.producers) {
-      const key = `producer:${producer.code}`;
-      if (excluded.has(key)) continue;
+      const key = `producer:${producer.code}` as const;
+      if (excluded.has(key) || (allowed && !allowed.has(key))) continue;
 
       const offset = producerOffsets.get(producer.code) ?? N(0);
       const quoted: Producer = { ...producer, bought: NR(N(producer.bought).add(offset)) };
       const cost = N(engine.costToBuyNext(quoted, 1));
-      if (cost.lte(0)) continue;
 
-      const value = horizonValueOfProducerUnit(engine, state, producer.code, this.options.horizonMs);
-      if (value.lte(0)) continue; // excludes dead-end chains
+      const valuation = valuePurchase(engine, state, { kind: "producer", producer }, cost, this.options.horizonMs);
+      if (!valuation) continue;
 
-      const efficiency = value.div(cost);
-      if (!best || efficiency.gt(best.efficiency)) {
-        best = { kind: "producer", code: producer.code, currencyCode: producer.currencyCode, cost, efficiency };
+      if (!best || valuation.efficiency.gt(best.efficiency)) {
+        best = { kind: "producer", code: producer.code, currencyCode: producer.currencyCode, cost, efficiency: valuation.efficiency };
       }
     }
 
     for (const upgrade of state.upgrades) {
-      const key = `upgrade:${upgrade.code}`;
-      if (excluded.has(key)) continue;
+      const key = `upgrade:${upgrade.code}` as const;
+      if (excluded.has(key) || (allowed && !allowed.has(key))) continue;
 
       const offset = upgradeOffsets.get(upgrade.code) ?? N(0);
       const boughtSoFar = N(upgrade.bought).add(offset);
@@ -429,28 +401,12 @@ export class GreedyBot implements BotPolicy {
 
       const quoted: Upgrade = { ...upgrade, bought: NR(boughtSoFar) };
       const cost = N(engine.costToBuyNext(quoted, 1));
-      if (cost.lte(0)) continue;
 
-      const value = horizonValueOfUpgrade(engine, state, quoted, this.options.horizonMs);
-      if (value.lte(0)) continue; // excludes effects with no impact on the primary chain
+      const valuation = valuePurchase(engine, state, { kind: "upgrade", upgrade: quoted }, cost, this.options.horizonMs);
+      if (!valuation) continue;
 
-      // Producer-paid upgrades: the price is production itself, so express
-      // the cost in primary-value (units burned x their horizon value) and
-      // require the trade to net out positive.
-      const producerPool = state.producers.find((p) => p.code === upgrade.currencyCode);
-      let efficiency: Decimal;
-      if (producerPool) {
-        const unitValue = horizonValueOfProducerUnit(engine, state, upgrade.currencyCode, this.options.horizonMs);
-        const costValue = cost.mul(unitValue);
-        if (costValue.lte(0)) continue;
-        efficiency = value.div(costValue);
-        if (efficiency.lte(1)) continue;
-      } else {
-        efficiency = value.div(cost);
-      }
-
-      if (!best || efficiency.gt(best.efficiency)) {
-        best = { kind: "upgrade", code: upgrade.code, currencyCode: upgrade.currencyCode, cost, efficiency };
+      if (!best || valuation.efficiency.gt(best.efficiency)) {
+        best = { kind: "upgrade", code: upgrade.code, currencyCode: upgrade.currencyCode, cost, efficiency: valuation.efficiency };
       }
     }
 

@@ -3,6 +3,7 @@ export * from "./definition";
 export * from "./greedy-bot";
 export * from "./harness";
 export * from "./horizon-value";
+export * from "./impact";
 export * from "./metrics";
 export * from "./queries";
 export * from "./report";

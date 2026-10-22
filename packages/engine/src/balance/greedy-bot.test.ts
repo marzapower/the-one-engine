@@ -8,7 +8,7 @@ import { NR } from "../nums";
 import { createInitialState } from "../state";
 import type { GameState } from "../state";
 import { MockTimeProvider } from "../testing/MockTimeProvider";
-import { GreedyBot } from "./greedy-bot";
+import { GREEDY_DEFAULTS, GreedyBot } from "./greedy-bot";
 import type { BotContext } from "./types";
 
 function baseState(overrides: Partial<GameState> = {}): GameState {
@@ -216,5 +216,128 @@ describe("GreedyBot", () => {
     const intents = bot.decide(ctxFor(state));
 
     expect(intents).toEqual([{ kind: "buyProducer", code: "A", amount: 1 }]);
+  });
+});
+
+describe("GreedyBot visit gate (minPurchaseImpact)", () => {
+  // primary persecDelta 100 over the default 600 s horizon = 60000: a 1% bar is 600.
+  const gate = { minPurchaseImpact: 0.01 };
+
+  /** Producer worth 600 (1%, relevant) or 60 (0.1%, irrelevant) at the 600 s horizon. */
+  const relevant = (code: string, cost: number) => producer(code, 1, cost);
+  const crumb = (code: string, cost: number) => producer(code, 0.1, cost);
+
+  it("(a) buys nothing when everything affordable is irrelevant", () => {
+    const state = baseState({ producers: [crumb("C", 10)], currencies: [currency("primary", 1000, 100)] });
+
+    expect(new GreedyBot(gate).decide(ctxFor(state))).toEqual([]);
+    // The ungated bot does buy them.
+    expect(new GreedyBot().decide(ctxFor(state)).length).toBeGreaterThan(0);
+  });
+
+  it("(b) plans the relevant candidate FIRST even when crumbs in the same pool are more efficient", () => {
+    // R: value 600, cost 100 -> efficiency 6.  C: value 60, cost 0.5 -> efficiency 120.
+    const state = baseState({ producers: [relevant("R", 100), crumb("C", 0.5)], currencies: [currency("primary", 150, 100)] });
+
+    const gated = new GreedyBot(gate).decide(ctxFor(state));
+    expect(gated[0]).toEqual({ kind: "buyProducer", code: "R", amount: 1 });
+    expect(gated.filter((i) => i.kind === "buyProducer" && i.code === "R")).toHaveLength(1);
+    // The rest of the budget still goes to the crumbs (the visit buys as usual).
+    expect(gated.length).toBeGreaterThan(1);
+
+    expect(new GreedyBot().decide(ctxFor(state))[0]).toEqual({ kind: "buyProducer", code: "C", amount: 1 });
+  });
+
+  it("(c) a producer-paid upgrade with negative net value does not open the gate; a positive one does", () => {
+    const paidIn = (cost: number): Upgrade => ({
+      code: "u",
+      name: "u",
+      currencyCode: "p1",
+      amount: NR(0),
+      bought: NR(0),
+      scaling: linearScaling(cost, 0),
+      effects: [{ stage: 0, target: { kind: "currency", code: "primary", path: "persecDelta" }, type: "mult", func: linearScaling(1, 0.5) }],
+    });
+    // p1 is unaffordable (cost 1e9); its 10 units are worth 600 each, the upgrade gains 0.5 x 10 x 600 = 3000.
+    const p1: Producer = { ...producer("p1", 1, 1e9), amount: NR(10) };
+    const stateWith = (cost: number) => baseState({ producers: [p1], upgrades: [paidIn(cost)], currencies: [currency("primary", 0, 10)] });
+
+    expect(new GreedyBot(gate).decide(ctxFor(stateWith(10)))).toEqual([]); // burns 6000 for 3000
+    const opened = new GreedyBot(gate).decide(ctxFor(stateWith(2)));
+    expect(opened.length).toBeGreaterThan(0);
+    expect(opened.every((i) => i.kind === "buyUpgrade" && i.code === "u")).toBe(true);
+  });
+
+  it("(d) buys an isolated utility upgrade", () => {
+    const utility: Upgrade = {
+      code: "util",
+      name: "util",
+      currencyCode: "prestige",
+      amount: NR(0),
+      bought: NR(0),
+      scaling: linearScaling(10, 0),
+      effects: [{ stage: 0, target: { kind: "currency", code: "prestige", path: "capacityMult" }, type: "mult", func: linearScaling(1, 1) }],
+    };
+    const convert: Prestige = {
+      code: "convert",
+      currencyCode: "prestige",
+      source: { kind: "currency", code: "primary", path: "amount" },
+      target: { kind: "currency", code: "prestige", path: "amount" },
+      func: linearScaling(0, 1),
+      effects: [],
+    };
+    const state = baseState({
+      producers: [crumb("C", 1e9)],
+      upgrades: [utility],
+      prestiges: [convert],
+      currencies: [currency("primary", 0, 100), currency("prestige", 50)],
+    });
+
+    expect(new GreedyBot(gate).decide(ctxFor(state))).toEqual([
+      { kind: "buyUpgrade", code: "util" },
+      { kind: "buyUpgrade", code: "util" },
+      { kind: "buyUpgrade", code: "util" },
+      { kind: "buyUpgrade", code: "util" },
+      { kind: "buyUpgrade", code: "util" },
+    ]);
+  });
+
+  it("(e) without a prestige, makes a catch-up visit after maxWaitMs since the last purchase", () => {
+    const bot = new GreedyBot({ ...gate, maxWaitMs: 60_000 });
+    const state = () => baseState({ producers: [crumb("C", 10)], currencies: [currency("primary", 15, 100)] });
+
+    expect(bot.decide(ctxFor(state(), 30_000))).toEqual([]);
+    expect(bot.decide(ctxFor(state(), 60_000))).toEqual([{ kind: "buyProducer", code: "C", amount: 1 }]);
+    // The visit reset the clock: no new catch-up right away.
+    expect(bot.decide(ctxFor(state(), 65_000))).toEqual([]);
+    expect(bot.decide(ctxFor(state(), 120_000))).toEqual([{ kind: "buyProducer", code: "C", amount: 1 }]);
+  });
+
+  it("(f) defaults are the gate off, and decisions equal an explicit threshold of 0", () => {
+    expect(GREEDY_DEFAULTS.minPurchaseImpact).toBe(0);
+    expect(GREEDY_DEFAULTS.maxWaitMs).toBe(Number.POSITIVE_INFINITY);
+
+    const state = baseState({ producers: [crumb("C", 10), relevant("R", 100)], currencies: [currency("primary", 250, 100)] });
+    const byDefault = new GreedyBot().decide(ctxFor(state));
+    expect(byDefault.length).toBeGreaterThan(0);
+    expect(new GreedyBot({ minPurchaseImpact: 0, maxWaitMs: 1 }).decide(ctxFor(state))).toEqual(byDefault);
+  });
+
+  it("rejects invalid gate options at construction and in setOptions", () => {
+    for (const bad of [Number.NaN, -0.1, Number.POSITIVE_INFINITY]) {
+      expect(() => new GreedyBot({ minPurchaseImpact: bad })).toThrow(/minImpact/);
+    }
+    expect(() => new GreedyBot({ horizonMs: 0 })).toThrow(/horizonMs/);
+    expect(() => new GreedyBot({ maxWaitMs: Number.NaN })).toThrow(/maxWaitMs/);
+    expect(() => new GreedyBot().setOptions({ minPurchaseImpact: -1 })).toThrow(/minImpact/);
+    expect(() => new GreedyBot({ horizonMs: Number.POSITIVE_INFINITY })).toThrow(/horizonMs/);
+  });
+
+  it("leaves the options untouched when setOptions is rejected", () => {
+    const state = baseState({ producers: [crumb("C", 10)], currencies: [currency("primary", 250, 100)] });
+    const bot = new GreedyBot(gate);
+    // The valid half (gate off) must not apply when the other half is invalid.
+    expect(() => bot.setOptions({ minPurchaseImpact: 0, horizonMs: 0 })).toThrow(/horizonMs/);
+    expect(bot.decide(ctxFor(state))).toEqual([]);
   });
 });

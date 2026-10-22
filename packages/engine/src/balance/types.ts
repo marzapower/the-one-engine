@@ -114,9 +114,12 @@ export interface DecadeTime {
 }
 
 /**
- * A sample point is "dead" when NO action is available:
+ * A sample point is "dead" (waiting) when there is nothing worth doing.
+ * With the default metric (`minImpact` 0) that means NO action is available:
  * no producer's next single unit is affordable, no upgrade is affordable,
- * and no prestige would yield a positive gain.
+ * and no prestige would yield a positive gain. With `minImpact` > 0 (see
+ * `WaitingOptions`) it means no affordable purchase is relevant to the
+ * player profile and no prestige is worth taking by ratio.
  * Consecutive dead samples merge into windows.
  */
 export interface DeadTimeWindow {
