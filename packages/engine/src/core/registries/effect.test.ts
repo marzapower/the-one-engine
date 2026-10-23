@@ -5,11 +5,18 @@ import { BUILT_IN_EFFECTS, EffectRegistry, type EffectTypeDef } from "./effect";
 
 describe("EffectRegistry", () => {
   describe("built-in types", () => {
-    it("seeds 'add' and 'mult' by default", () => {
+    it("seeds 'add', 'mult' and 'pow' by default", () => {
       const registry = new EffectRegistry();
-      expect(registry.list()).toHaveLength(2);
+      expect(registry.list()).toHaveLength(3);
       expect(registry.lookup("add")).toBeDefined();
       expect(registry.lookup("mult")).toBeDefined();
+      expect(registry.lookup("pow")).toBeDefined();
+    });
+
+    it("'pow' has priority 300 and raises the value", () => {
+      const pow = new EffectRegistry().lookup("pow")!;
+      expect(pow.priority).toBe(300);
+      expect(N(pow.apply(N(32), N(1.2))).toNumber()).toBeCloseTo(64, 9);
     });
 
     it("can be built empty", () => {
@@ -55,7 +62,7 @@ describe("EffectRegistry", () => {
       registry.register({ id: "custom", version: "1.0.0", priority: 150, apply: () => NR(0) });
 
       const ids = registry.list().map((t) => t.id);
-      expect(ids).toEqual(["add", "custom", "mult"]);
+      expect(ids).toEqual(["add", "custom", "mult", "pow"]);
     });
 
     it("filters by allowed stage", () => {

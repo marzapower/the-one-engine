@@ -10,7 +10,7 @@ export interface EffectTypeDef {
 
   /**
    * Order among effects applied to the same target in the same stage: lower
-   * first. Built-ins: `add` 100, `mult` 200.
+   * first. Built-ins: `add` 100, `mult` 200, `pow` 300.
    */
   priority: number;
 
@@ -24,7 +24,7 @@ export interface EffectTypeDef {
   allowedStages?: (0 | 1 | 2)[];
 }
 
-/** Effect types available to one engine. Seeded with `add` and `mult` unless told otherwise. */
+/** Effect types available to one engine. Seeded with `add`, `mult` and `pow` unless told otherwise. */
 export class EffectRegistry {
   private readonly types = new Map<string, EffectTypeDef>();
 
@@ -73,5 +73,13 @@ export const BUILT_IN_EFFECTS: readonly EffectTypeDef[] = [
     version: "1.0.0",
     priority: 200,
     apply: (prev: Decimal, computed: Decimal) => NR(prev.mul(computed)),
+  },
+  {
+    // Raises the value built so far in its stage (after add and mult): an
+    // exponent that matters more as the base grows.
+    id: "pow",
+    version: "1.0.0",
+    priority: 300,
+    apply: (prev: Decimal, computed: Decimal) => NR(prev.pow(computed)),
   },
 ];

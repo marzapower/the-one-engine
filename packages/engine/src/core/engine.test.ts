@@ -113,10 +113,10 @@ describe("Engine", () => {
       const engineA = new Engine();
       const engineB = new Engine();
 
-      engineA.effectTypes.register({ id: "pow", version: "1.0.0", priority: 300, apply: (prev, computed) => NR(prev.pow(computed)) });
+      engineA.effectTypes.register({ id: "root", version: "1.0.0", priority: 300, apply: (prev, computed) => NR(prev.pow(computed)) });
 
-      expect(engineA.effectTypes.lookup("pow")).toBeDefined();
-      expect(engineB.effectTypes.lookup("pow")).toBeUndefined();
+      expect(engineA.effectTypes.lookup("root")).toBeDefined();
+      expect(engineB.effectTypes.lookup("root")).toBeUndefined();
     });
   });
 });

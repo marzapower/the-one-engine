@@ -1,5 +1,5 @@
 /**
- * Reference addon: registers a cubic growth method, a `pow` effect type and a
+ * Reference addon: registers a cubic growth method, a `cap` effect type and a
  * logging stage on a given engine. Demonstrates how the three registries and
  * the tick pipeline extend without touching engine code.
  */
@@ -48,12 +48,12 @@ const cubicGrowthDef: GrowthMethodDef = {
   },
 };
 
-/** Power effect: apply(prev, computed) = prev ^ computed. Runs after `mult` (200). */
-const powEffectDef: EffectTypeDef = {
-  id: "pow",
+/** Cap effect: apply(prev, computed) = min(prev, computed). Runs after the built-ins (`pow` is 300). */
+const capEffectDef: EffectTypeDef = {
+  id: "cap",
   version: "1.0.0",
-  priority: 300,
-  apply: (prev, computed) => NR(prev.pow(computed)),
+  priority: 400,
+  apply: (prev, computed) => NR(prev.min(computed)),
   allowedStages: [0, 1, 2],
 };
 
@@ -68,7 +68,7 @@ const logTickStageDef: StageDef = {
 };
 
 /**
- * Registers the cubic growth method, the `pow` effect type and the `LogTick`
+ * Registers the cubic growth method, the `cap` effect type and the `LogTick`
  * stage on `engine`. Throws if the growth method is already registered
  * unless `allowOverride` is true.
  */
@@ -78,18 +78,18 @@ export function applyCubicAddon(engine: Engine, allowOverride = false): void {
   }
 
   engine.growths.register(cubicGrowthDef, allowOverride);
-  engine.effectTypes.register(powEffectDef);
+  engine.effectTypes.register(capEffectDef);
   engine.stages.register(logTickStageDef, allowOverride);
 }
 
 /** Unregisters the cubic addon's growth method, effect type and stage. Safe to call when not applied. */
 export function removeCubicAddon(engine: Engine): void {
   engine.growths.unregister("cubic");
-  engine.effectTypes.unregister("pow");
+  engine.effectTypes.unregister("cap");
   engine.stages.unregister("LogTick");
 }
 
 /** True when every cubic addon component is registered on `engine`. */
 export function isCubicAddonApplied(engine: Engine): boolean {
-  return engine.growths.lookup("cubic") !== undefined && engine.effectTypes.lookup("pow") !== undefined && engine.stages.lookup("LogTick") !== undefined;
+  return engine.growths.lookup("cubic") !== undefined && engine.effectTypes.lookup("cap") !== undefined && engine.stages.lookup("LogTick") !== undefined;
 }

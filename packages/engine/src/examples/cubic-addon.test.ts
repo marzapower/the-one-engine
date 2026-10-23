@@ -17,7 +17,7 @@ describe("cubic addon", () => {
     applyCubicAddon(engine);
 
     expect(engine.growths.lookup("cubic")).toBeDefined();
-    expect(engine.effectTypes.lookup("pow")).toBeDefined();
+    expect(engine.effectTypes.lookup("cap")).toBeDefined();
     expect(engine.stages.lookup("LogTick")).toBeDefined();
   });
 
@@ -31,7 +31,7 @@ describe("cubic addon", () => {
     applyCubicAddon(engine, true);
 
     expect(engine.growths.lookup("cubic")).toBeDefined();
-    expect(engine.effectTypes.lookup("pow")).toBeDefined();
+    expect(engine.effectTypes.lookup("cap")).toBeDefined();
     expect(engine.stages.lookup("LogTick")).toBeDefined();
   });
 
@@ -40,7 +40,8 @@ describe("cubic addon", () => {
     removeCubicAddon(engine);
 
     expect(engine.growths.lookup("cubic")).toBeUndefined();
-    expect(engine.effectTypes.lookup("pow")).toBeUndefined();
+    expect(engine.effectTypes.lookup("cap")).toBeUndefined();
+    expect(engine.effectTypes.lookup("pow")).toBeDefined(); // built-in, untouched
     expect(engine.stages.lookup("LogTick")).toBeUndefined();
   });
 
@@ -93,21 +94,21 @@ describe("cubic addon", () => {
     expect(growth?.capabilities.hasClosedFormNmax).toBe(false);
   });
 
-  it("pow effect type apply formula is correct", () => {
+  it("cap effect type apply formula is correct", () => {
     applyCubicAddon(engine);
-    const effect = engine.effectTypes.lookup("pow");
+    const effect = engine.effectTypes.lookup("cap");
     expect(effect).toBeDefined();
     if (!effect) return;
 
-    // apply(2, 3) = 2^3 = 8
-    const result = effect.apply(N(2), N(3));
-    expect(N(result).sub(8).abs().lte(1e-9)).toBe(true);
+    // apply(8, 3) = min(8, 3) = 3
+    expect(N(effect.apply(N(8), N(3))).eq(3)).toBe(true);
+    expect(N(effect.apply(N(2), N(3))).eq(2)).toBe(true);
   });
 
-  it("pow effect type has the declared priority and stages", () => {
+  it("cap effect type has the declared priority and stages", () => {
     applyCubicAddon(engine);
-    const effect = engine.effectTypes.lookup("pow");
-    expect(effect?.priority).toBe(300);
+    const effect = engine.effectTypes.lookup("cap");
+    expect(effect?.priority).toBe(400);
     expect(effect?.allowedStages).toEqual([0, 1, 2]);
   });
 
