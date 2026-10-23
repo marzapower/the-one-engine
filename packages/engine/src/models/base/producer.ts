@@ -36,4 +36,6 @@ export interface Producer extends Buyable, Growable, Coded, Resettable {
   produces: ProducerTarget[];
   priority?: number;
   capacity?: ProducerCapacity;
+  /** Outside the wall: the overflow drag (`SaturationRules.drag`) does not slow it. Default false. */
+  dragExempt?: boolean;
 }

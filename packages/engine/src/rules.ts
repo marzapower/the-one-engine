@@ -38,7 +38,8 @@ export interface SaturationRules {
   push?: { currencyCode: string; exponent: number };
 
   /**
-   * The overflow currency stock slows every producer down. Once the stock
+   * The overflow currency stock slows every producer down, except those
+   * marked `dragExempt` (outside the wall). Once the stock
    * exceeds `onset`, with `u = log10(stock) - log10(onset)`:
    * `factor = max(floor, exp(-(u / scale) ^ exponent))`.
    * Independent of the gate: it applies whenever the overflow currency exists.

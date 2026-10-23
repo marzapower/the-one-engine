@@ -148,6 +148,7 @@ export const ProducerSchema = z.object({
   max: NumerusSchema.optional(),
   priority: z.number().optional(),
   capacity: ProducerCapacitySchema.optional(),
+  dragExempt: z.boolean().optional(),
   unlock: UnlockSchema.optional(),
 });
 

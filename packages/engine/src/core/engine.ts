@@ -534,7 +534,7 @@ export class Engine {
         const effectivePersec = applyModifiers(produced.persec, mods.get(produced) ?? [], this.services);
         produced.persecEffective = NR(effectivePersec);
 
-        const base = effectivePersec.mul(N(producer.amount)).mul(drag);
+        const base = effectivePersec.mul(N(producer.amount)).mul(producer.dragExempt ? 1 : drag);
 
         const ratio =
           active && producer.capacity

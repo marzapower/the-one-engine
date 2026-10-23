@@ -91,6 +91,7 @@ const producerShape = z.object({
   max: numberInput.optional(),
   priority: plainNumber.optional(),
   capacity: z.object({ base: numberInput, factor: numberInput, decayScale: plainNumber, overflowRate: plainNumber.optional() }).optional(),
+  dragExempt: z.boolean().optional(),
   unlock: unlockShape.optional(),
 });
 

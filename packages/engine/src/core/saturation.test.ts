@@ -311,3 +311,17 @@ describe("Engine.computeProducers — saturation golden parity", () => {
     });
   }
 });
+
+describe("Engine.computeProducers — producers outside the wall", () => {
+  it("does not drag a dragExempt producer, and still drags the others", () => {
+    const state = buildState({ ifEarned: 0, dd: "1e40", wallMemory: 0, cooling: 1 });
+    const fly = state.producers.find((p) => p.code === "t0")!;
+    fly.dragExempt = true;
+    const engine = new Engine(1000, { time: new MockTimeProvider(1000) });
+
+    engine.computeProducers(state, 1000);
+
+    expectCloseToGolden(persecDeltaOf(state, "time"), "1");
+    expectCloseToGolden(persecDeltaOf(state, "e7"), "7.000963626149199e49");
+  });
+});
