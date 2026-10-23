@@ -5,7 +5,7 @@ import { ScaleOn, ScalingMethod } from "../models/base";
 import { N, NR } from "../nums";
 import { type GameState, createInitialState } from "../state";
 import { Engine } from "./engine";
-import { buyProducer, buyUpgrade, findCostPool, isUnlocked, producerPurchaseBlock, upgradePurchaseBlock } from "./purchase";
+import { buyProducer, buyUpgrade, costShortfalls, findCostPool, isUnlocked, producerPurchaseBlock, upgradePurchaseBlock } from "./purchase";
 
 const lin = (base: number, coeff = 0): GrowthFunction => ({ base: NR(base), coeff: NR(coeff), func: ScalingMethod.Linear, scaleOn: ScaleOn.self });
 
@@ -200,5 +200,156 @@ describe("buyProducer / producerPurchaseBlock", () => {
     expect(engine.buyProducer(state, "p", 1)).toBe(true);
     expect(engine.buyUpgrade(state, "u")).toBe(true);
     expect(engine.isUnlocked(state, state.upgrades[0]!)).toBe(true);
+  });
+});
+
+describe("extra costs", () => {
+  const geo = (base: number, coeff: number): GrowthFunction => ({ base: NR(base), coeff: NR(coeff), func: ScalingMethod.Geometric, scaleOn: ScaleOn.self });
+  const amountOf = (state: GameState, code: string): number => N(findCostPool(state, code)!.amount).toNumber();
+
+  // Time Fly: main tick 1e5·4^b, extra tack and tock equal.
+  const fly = (): Producer =>
+    producer("fly", {
+      currencyCode: "tick",
+      scaling: geo(1e5, 4),
+      extraCosts: [
+        { currencyCode: "tack", scaling: geo(1e5, 4) },
+        { currencyCode: "tock", scaling: geo(1e5, 4) },
+      ],
+    });
+  // Creature: main cocoon 1·3^b, extras 900·4^b from the second unit.
+  const creature = (): Producer =>
+    producer("t1", {
+      currencyCode: "cocoon",
+      scaling: geo(1, 3),
+      extraCosts: [
+        { currencyCode: "tack", scaling: geo(900, 4), fromBought: 1 },
+        { currencyCode: "tock", scaling: geo(900, 4), fromBought: 1 },
+      ],
+    });
+  const flyState = (tick: number, tack: number, tock: number): GameState =>
+    stateOf({ currencies: [currency("tick", tick), currency("tack", tack), currency("tock", tock)], producers: [fly()] });
+
+  it("a three-cost producer debits every pool at once", () => {
+    const engine = new Engine();
+    const state = flyState(5e5, 4e5, 3e5);
+    expect(buyProducer(engine, state, "fly", 1)).toBe(true);
+    expect([amountOf(state, "tick"), amountOf(state, "tack"), amountOf(state, "tock")]).toEqual([4e5, 3e5, 2e5]);
+    expect(N(state.producers[0]!.bought).toNumber()).toBe(1);
+  });
+
+  it("denies the purchase and touches no pool when a single pool is short", () => {
+    const engine = new Engine();
+    const state = flyState(1e9, 1e9, 99_999);
+    expect(producerPurchaseBlock(engine, state, state.producers[0]!, 1)).toBe("unaffordable");
+    expect(buyProducer(engine, state, "fly", 1)).toBe(false);
+    expect([amountOf(state, "tick"), amountOf(state, "tack"), amountOf(state, "tock")]).toEqual([1e9, 1e9, 99_999]);
+    expect(N(state.producers[0]!.bought).toNumber()).toBe(0);
+  });
+
+  it("the first creature costs only its main pool, the second pays the extras too", () => {
+    const engine = new Engine();
+    const state = stateOf({ producers: [creature(), producer("sink")], currencies: [currency("tack", 0), currency("tock", 0)] });
+    state.producers.push(producer("cocoon", { amount: NR(100) }));
+    state.producers[0]!.currencyCode = "cocoon";
+    expect(buyProducer(engine, state, "t1", 1)).toBe(true);
+    expect([amountOf(state, "cocoon"), amountOf(state, "tack"), amountOf(state, "tock")]).toEqual([99, 0, 0]);
+
+    expect(producerPurchaseBlock(engine, state, state.producers[0]!, 1)).toBe("unaffordable");
+    state.currencies[0]!.amount = NR(3600);
+    state.currencies[1]!.amount = NR(3700);
+    expect(buyProducer(engine, state, "t1", 1)).toBe(true);
+    expect([amountOf(state, "cocoon"), amountOf(state, "tack"), amountOf(state, "tock")]).toEqual([96, 0, 100]);
+  });
+
+  it("reports noPool for an undefined extra pool, even when that extra is still free", () => {
+    const engine = new Engine();
+    const state = stateOf({ currencies: [currency("tack", 0)], producers: [creature(), producer("cocoon", { amount: NR(100) })] });
+    state.producers[0]!.currencyCode = "cocoon";
+    // tock is missing; bought = 0 makes both extras free
+    expect(producerPurchaseBlock(engine, state, state.producers[0]!, 1)).toBe("noPool");
+    expect(buyProducer(engine, state, "t1", 1)).toBe(false);
+    expect(N(state.producers[1]!.amount).toNumber()).toBe(100);
+  });
+
+  it("an upgrade with two costs is atomic and pays both", () => {
+    const engine = new Engine();
+    const u = upgrade("u-split", { currencyCode: "a", scaling: geo(900, 4), extraCosts: [{ currencyCode: "b", scaling: geo(300, 4) }] });
+    const state = stateOf({ currencies: [currency("a", 900), currency("b", 299)], upgrades: [u] });
+    expect(upgradePurchaseBlock(engine, state, u)).toBe("unaffordable");
+    expect(buyUpgrade(engine, state, "u-split")).toBe(false);
+    expect([amountOf(state, "a"), amountOf(state, "b")]).toEqual([900, 299]);
+
+    state.currencies[1]!.amount = NR(1000);
+    expect(buyUpgrade(engine, state, "u-split")).toBe(true);
+    expect([amountOf(state, "a"), amountOf(state, "b")]).toEqual([0, 700]);
+    // second level: 900·4 and 300·4
+    state.currencies[0]!.amount = NR(3599);
+    expect(upgradePurchaseBlock(engine, state, u)).toBe("unaffordable");
+    state.currencies[0]!.amount = NR(3600);
+    state.currencies[1]!.amount = NR(1200);
+    expect(buyUpgrade(engine, state, "u-split")).toBe(true);
+    expect([amountOf(state, "a"), amountOf(state, "b")]).toEqual([0, 0]);
+  });
+
+  it("extras can be paid in a producer's stock", () => {
+    const engine = new Engine();
+    const u = upgrade("u", { currencyCode: "one", scaling: lin(10), extraCosts: [{ currencyCode: "drone", scaling: lin(5) }] });
+    const state = stateOf({ currencies: [currency("one", 10)], producers: [producer("drone", { amount: NR(4) })], upgrades: [u] });
+    expect(upgradePurchaseBlock(engine, state, u)).toBe("unaffordable");
+    state.producers[0]!.amount = NR(7);
+    expect(buyUpgrade(engine, state, "u")).toBe(true);
+    expect(N(state.producers[0]!.amount).toNumber()).toBe(2);
+  });
+
+  it("costShortfalls lists missing and short pools in line order, skipping free lines with a pool", () => {
+    const engine = new Engine();
+    const state = stateOf({ currencies: [currency("tick", 1e9), currency("tack", 10)], producers: [fly()] });
+    // tack short, tock missing
+    expect(costShortfalls(engine, state, state.producers[0]!, 1)).toEqual(["tack", "tock"]);
+    expect(engine.costShortfalls(state, state.producers[0]!)).toEqual(["tack", "tock"]);
+    expect(producerPurchaseBlock(engine, state, state.producers[0]!, 1)).toBe("noPool");
+
+    const full = flyState(1e9, 1e9, 1e9);
+    expect(costShortfalls(engine, full, full.producers[0]!, 1)).toEqual([]);
+
+    const free = stateOf({ currencies: [currency("tack", 0), currency("tock", 0)], producers: [creature(), producer("cocoon", { amount: NR(1) })] });
+    free.producers[0]!.currencyCode = "cocoon";
+    expect(costShortfalls(engine, free, free.producers[0]!, 1)).toEqual([]);
+  });
+
+  it("rejects fractional, NaN, infinite and non-positive amounts as unknown", () => {
+    const engine = new Engine();
+    const state = flyState(1e12, 1e12, 1e12);
+    const p = state.producers[0]!;
+    for (const amount of [1.5, NaN, Infinity, 0, -1]) {
+      expect(producerPurchaseBlock(engine, state, p, amount)).toBe("unknown");
+      expect(buyProducer(engine, state, "fly", amount)).toBe(false);
+    }
+    expect(N(p.bought).toNumber()).toBe(0);
+  });
+
+  it("maxBuyableAcrossPools through the engine ignores max, while the block reports maxed", () => {
+    const engine = new Engine();
+    const loose = producer("loose", {
+      currencyCode: "tack",
+      scaling: lin(3600, 0),
+      extraCosts: [{ currencyCode: "tock", scaling: lin(3600, 0) }],
+      max: NR(1),
+      bought: NR(1),
+      amount: NR(1),
+    });
+    const state = stateOf({ currencies: [currency("tack", 7200), currency("tock", 7200)], producers: [loose] });
+    expect(N(engine.maxBuyableAcrossPools(state, loose)).toNumber()).toBe(2);
+    expect(producerPurchaseBlock(engine, state, loose, 1)).toBe("maxed");
+    expect(engine.costLinesToBuyNext(loose, 1).map((l) => l.currencyCode)).toEqual(["tack", "tock"]);
+  });
+
+  it("maxBuyableAcrossPools resolves pools in the state and gives 0 for a missing one", () => {
+    const engine = new Engine();
+    const state = flyState(1e6, 1e9, 1e9);
+    expect(N(engine.maxBuyableAcrossPools(state, state.producers[0]!)).toNumber()).toBe(2);
+    state.currencies.pop();
+    expect(N(engine.maxBuyableAcrossPools(state, state.producers[0]!)).toNumber()).toBe(0);
   });
 });

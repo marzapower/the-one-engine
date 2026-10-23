@@ -7,6 +7,7 @@ import { Factory } from "./base/factory";
 import {
   CurrencySchema,
   DataPackSchema,
+  ExtraCostSchema,
   GameStateSchema,
   GrowthFunctionSchema,
   NumerusSchema,
@@ -339,5 +340,28 @@ describe("schema — evolutive fields", () => {
       ],
     };
     expect(parseGameState(bad).valid).toBe(false);
+  });
+});
+
+describe("ExtraCostSchema", () => {
+  const scaling = { base: 900, coeff: 4, func: "geometric", scaleOn: "self" };
+
+  it("accepts an extra cost with and without fromBought", () => {
+    expect(ExtraCostSchema.safeParse({ currencyCode: "tack", scaling }).success).toBe(true);
+    expect(ExtraCostSchema.safeParse({ currencyCode: "tack", scaling, fromBought: 1 }).success).toBe(true);
+  });
+
+  it("rejects a negative or fractional fromBought", () => {
+    expect(ExtraCostSchema.safeParse({ currencyCode: "tack", scaling, fromBought: -1 }).success).toBe(false);
+    expect(ExtraCostSchema.safeParse({ currencyCode: "tack", scaling, fromBought: 0.5 }).success).toBe(false);
+  });
+
+  it("is accepted on producers and upgrades and survives parsing", () => {
+    const extraCosts = [{ currencyCode: "tack", scaling, fromBought: 1 }];
+    const prod = ProducerSchema.safeParse({ ...Factory.buildProducer({ code: "e1" }), extraCosts });
+    expect(prod.success && prod.data.extraCosts).toEqual(extraCosts);
+    const upg = UpgradeSchema.safeParse({ ...Factory.buildUpgrade({ code: "u1" }), extraCosts });
+    expect(upg.success && upg.data.extraCosts).toEqual(extraCosts);
+    expect(ProducerSchema.safeParse({ ...Factory.buildProducer({ code: "e1" }), extraCosts: [{ currencyCode: "tack" }] }).success).toBe(false);
   });
 });

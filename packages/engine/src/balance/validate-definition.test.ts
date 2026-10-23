@@ -247,7 +247,7 @@ describe("validateGameDefinition — codes and references", () => {
     ["no primary currency", (d) => delete d.currencies[0].primary, "onePrimary", "currencies"],
     ["two primary currencies", (d) => (d.currencies[1].primary = true), "onePrimary", "currencies"],
     ["producer paid in an unknown currency", (d) => (d.producers[0].currencyCode = "nope"), "unknownCostPool", "producers.0.currencyCode"],
-    ["producer paid in a producer", (d) => (d.producers[0].currencyCode = "p2"), "unknownCostPool", "producers.0.currencyCode"],
+    ["producer paid in an upgrade", (d) => (d.producers[0].currencyCode = "u1"), "unknownCostPool", "producers.0.currencyCode"],
     ["upgrade paid in an unknown pool", (d) => (d.upgrades[0].currencyCode = "nope"), "unknownCostPool", "upgrades.0.currencyCode"],
     ["upgrade paid in an upgrade", (d) => (d.upgrades[0].currencyCode = "u2"), "unknownCostPool", "upgrades.0.currencyCode"],
     ["produces an unknown code", (d) => (d.producers[0].produces[0].code = "nope"), "unknownGrowable", "producers.0.produces.0.code"],
@@ -596,5 +596,58 @@ describe("validateGameDefinition — upgrade/economy fields", () => {
     const eff = (path: string, code = "p1"): Json => ({ stage: 0, target: { kind: "producer", code, path }, type: "mult", func: lin(1, 1) });
     expect(codes(mutated((d) => (d.currencies[0].effects = [eff("persecDelta")])))).toContain("unresolvablePath currencies.0.effects.0.target.path");
     expect(codes(mutated((d) => (d.currencies[0].effects = [eff("produces.*.persec", "ghost")])))).toContain("unknownProducer currencies.0.effects.0.target.code");
+  });
+});
+
+describe("validateGameDefinition — extra costs", () => {
+  const extra = (currencyCode: string, more: Json = {}): Json => ({ currencyCode, scaling: geo(5, 2), ...more });
+
+  it("accepts a producer paid in a producer and extras in currencies and producers", () => {
+    expect(summary(validateGameDefinition(mutated((d) => (d.producers[0].currencyCode = "p2"))))).toEqual([]);
+    const def = mutated((d) => {
+      d.producers[0].extraCosts = [extra("gems", { fromBought: 1 }), extra("p2")];
+      d.upgrades[0].extraCosts = [extra("gems"), extra("p1", { fromBought: 0 })];
+    });
+    expect(validateGameDefinition(def)).toEqual([]);
+  });
+
+  it("rejects an unknown pool, on a producer and on an upgrade", () => {
+    expect(summary(validateGameDefinition(mutated((d) => (d.producers[0].extraCosts = [extra("nope")]))))).toContain("unknownCostPool producers.0.extraCosts.0.currencyCode");
+    expect(summary(validateGameDefinition(mutated((d) => (d.upgrades[0].extraCosts = [extra("u2")]))))).toContain("unknownCostPool upgrades.0.extraCosts.0.currencyCode");
+  });
+
+  it("rejects a pool repeated by the main cost or by another extra", () => {
+    expect(summary(validateGameDefinition(mutated((d) => (d.producers[0].extraCosts = [extra("gold")]))))).toContain("invalidShape producers.0.extraCosts.0.currencyCode");
+    expect(summary(validateGameDefinition(mutated((d) => (d.upgrades[0].extraCosts = [extra("gems"), extra("gems")]))))).toContain(
+      "invalidShape upgrades.0.extraCosts.1.currencyCode",
+    );
+  });
+
+  it("rejects a negative or fractional fromBought and a NaN one", () => {
+    expect(summary(validateGameDefinition(mutated((d) => (d.producers[0].extraCosts = [extra("gems", { fromBought: -1 })]))))).toContain(
+      "outOfRange producers.0.extraCosts.0.fromBought",
+    );
+    expect(summary(validateGameDefinition(mutated((d) => (d.upgrades[0].extraCosts = [extra("gems", { fromBought: 1.5 })]))))).toContain(
+      "outOfRange upgrades.0.extraCosts.0.fromBought",
+    );
+    expect(summary(validateGameDefinition(mutated((d) => (d.upgrades[0].extraCosts = [extra("gems", { fromBought: Number.NaN })]))))).toContain(
+      "invalidNumber upgrades.0.extraCosts.0.fromBought",
+    );
+  });
+
+  it("allows a constant extra price on a capped upgrade, as for its main cost (Loose Change)", () => {
+    const def = mutated((d) => {
+      d.upgrades[0].max = 1;
+      d.upgrades[0].scaling = lin(3600, 0);
+      d.upgrades[0].extraCosts = [extra("gems", { scaling: lin(3600, 0) })];
+    });
+    expect(summary(validateGameDefinition(def)).filter((i) => i.includes("upgrades.0"))).toEqual([]);
+  });
+
+  it("applies the cost-curve rules to the extra scaling", () => {
+    const issues = summary(validateGameDefinition(mutated((d) => (d.producers[0].extraCosts = [extra("gems", { scaling: geo(5, 2, { func: "cubic" }) })]))));
+    expect(issues).toContain("unknownGrowth producers.0.extraCosts.0.scaling.func");
+    const bad = summary(validateGameDefinition(mutated((d) => (d.producers[0].extraCosts = [extra("gems", { scaling: geo(-5, 2) })]))));
+    expect(bad.some((i) => i.endsWith("producers.0.extraCosts.0.scaling.base"))).toBe(true);
   });
 });

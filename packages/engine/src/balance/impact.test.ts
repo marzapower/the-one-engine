@@ -8,7 +8,7 @@ import { N, NR } from "../nums";
 import { createInitialState } from "../state";
 import type { GameState } from "../state";
 import { MockTimeProvider } from "../testing/MockTimeProvider";
-import { isMeaningfulValue, isWaiting, meaningfulPurchases, netPurchaseValue, prestigeWorthTaking } from "./impact";
+import { isMeaningfulValue, isWaiting, meaningfulPurchases, netPurchaseValue, prestigeWorthTaking, shopFactorWithBudget } from "./impact";
 import { anyActionAvailable } from "./queries";
 
 const lin = (base: number, coeff: number) => ({ base: NR(base), coeff: NR(coeff), func: ScalingMethod.Linear, scaleOn: ScaleOn.self });
@@ -214,5 +214,22 @@ describe("isWaiting", () => {
     expect(isWaiting(newEngine(), high, opts)).toBe(false);
     // The historical metric still sees any positive gain as an action.
     expect(isWaiting(newEngine(), low, { ...opts, minImpact: 0 })).toBe(false);
+  });
+});
+
+describe("shopFactorWithBudget — extra costs", () => {
+  const withShop = (extraCosts?: Upgrade["extraCosts"]) =>
+    stateOf({
+      currencies: [currency("primary", 0, 10), currency("prestige", 100), currency("gems", 100)],
+      upgrades: [{ ...upgrade("shop", 1, { currencyCode: "prestige", max: 3 }), extraCosts }],
+    });
+
+  it("counts a shop upgrade paid in one pool", () => {
+    expect(shopFactorWithBudget(newEngine(), withShop(), "prestige", N(100)).gt(1)).toBe(true);
+  });
+
+  it("leaves an upgrade with extra costs out of the estimate (a known underestimate)", () => {
+    const extraCosts = [{ currencyCode: "gems", scaling: lin(1, 0) }];
+    expect(shopFactorWithBudget(newEngine(), withShop(extraCosts), "prestige", N(100)).eq(1)).toBe(true);
   });
 });

@@ -70,6 +70,12 @@ const unlockShape = z.object({
   gt: numberInput,
 });
 
+const extraCostShape = z.object({
+  currencyCode: z.string(),
+  scaling: growthFunctionShape,
+  fromBought: plainNumber.optional(),
+});
+
 const producerShape = z.object({
   code: z.string(),
   name: z.string(),
@@ -77,6 +83,7 @@ const producerShape = z.object({
   amount: numberInput.optional(),
   currencyCode: z.string(),
   scaling: growthFunctionShape,
+  extraCosts: z.array(extraCostShape).optional(),
   produces: z.array(z.object({ code: z.string(), persec: numberInput, persecEffective: numberInput.optional() })),
   persecDelta: numberInput.optional(),
   resetsOn: z.array(z.string()),
@@ -120,6 +127,7 @@ const upgradeShape = z.object({
   summary: z.string().optional(),
   currencyCode: z.string(),
   scaling: growthFunctionShape,
+  extraCosts: z.array(extraCostShape).optional(),
   effects: z.array(effectShape),
   behaviors: z.array(behaviorShape).optional(),
   resetsOn: z.array(z.string()).optional(),
@@ -343,17 +351,23 @@ function checkRules(def: GameDefinition, ctx: DefinitionValidationContext): Defi
     checkPrestigeRefs(currency.resetsOn, path);
   });
 
+  // Extra costs: unknown/duplicate pools and `fromBought` are reported by the state walker below; here only the curve rules.
+  const checkExtraCosts = (extras: { scaling: GrowthFunction }[] | undefined, path: Path, constantPriceAllowed = false): void => {
+    (extras ?? []).forEach((extra, k) => checkCurve(extra.scaling, [...path, "extraCosts", k, "scaling"], "cost", constantPriceAllowed));
+  };
+
   // --- producers -----------------------------------------------------------
   def.producers.forEach((producer, i) => {
     const path: Path = ["producers", i];
-    if (!currencyCodes.has(producer.currencyCode)) {
-      add("unknownCostPool", [...path, "currencyCode"], `${pathLabel([...path, "currencyCode"])}: unknown currency "${producer.currencyCode}"`);
+    if (!currencyCodes.has(producer.currencyCode) && !producerCodes.has(producer.currencyCode)) {
+      add("unknownCostPool", [...path, "currencyCode"], `${pathLabel([...path, "currencyCode"])}: "${producer.currencyCode}" is neither a currency nor a producer`);
     }
     range(producer.amount, NON_NEGATIVE, [...path, "amount"]);
     range(producer.resetsTo, NON_NEGATIVE, [...path, "resetsTo"]);
     range(producer.max, POSITIVE, [...path, "max"]);
     checkPrestigeRefs(producer.resetsOn, path);
     checkCurve(producer.scaling, [...path, "scaling"], "cost");
+    checkExtraCosts(producer.extraCosts, path);
 
     producer.produces.forEach((produced, j) => {
       const producedPath = [...path, "produces", j];
@@ -381,6 +395,7 @@ function checkRules(def: GameDefinition, ctx: DefinitionValidationContext): Defi
     range(upgrade.resetsTo, NON_NEGATIVE, [...path, "resetsTo"]);
     checkPrestigeRefs(upgrade.resetsOn, path);
     checkCurve(upgrade.scaling, [...path, "scaling"], "cost", upgrade.max !== undefined);
+    checkExtraCosts(upgrade.extraCosts, path, upgrade.max !== undefined);
     checkEffects(upgrade.effects, path);
 
     (upgrade.behaviors ?? []).forEach((behavior, k) => {

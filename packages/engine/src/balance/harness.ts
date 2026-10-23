@@ -90,7 +90,8 @@ export function runBalanceSim(opts: RunBalanceSimOptions): BalanceReport {
  * Stuck (evaluated once per chunk, before tapping): the click's currency
  * exists; at least one producer is priced in it; NONE of those producers'
  * next single unit is affordable (`nextUnitCost`, same cost function
- * `queries.ts` uses); AND that currency's `persecDelta` is <= 0. Upgrades and
+ * `queries.ts` uses, MAIN cost only: tapping is a local policy that ignores
+ * `extraCosts`); AND that currency's `persecDelta` is <= 0. Upgrades and
  * prestiges are ignored. A currency that can't be found never taps and never
  * throws. If not stuck, `nextTapMs` is left untouched.
  *
@@ -160,9 +161,10 @@ function applyBuyProducer(state: GameState, engine: Engine, code: string, amount
   if (!producer) return undefined;
 
   const cost = engine.costToBuyNext(producer, amount);
+  const costs = producer.extraCosts?.length ? engine.costLinesToBuyNext(producer, amount) : undefined;
   if (!buyProducer(engine, state, code, amount)) return undefined;
 
-  return { kind: "buyProducer", code, amount, cost, tSimMs };
+  return { kind: "buyProducer", code, amount, cost, ...(costs && { costs }), tSimMs };
 }
 
 function applyBuyUpgrade(state: GameState, engine: Engine, code: string, tSimMs: number): SimAction | undefined {
@@ -170,9 +172,10 @@ function applyBuyUpgrade(state: GameState, engine: Engine, code: string, tSimMs:
   if (!upgrade) return undefined;
 
   const cost = engine.costToBuyNext(upgrade, 1);
+  const costs = upgrade.extraCosts?.length ? engine.costLinesToBuyNext(upgrade, 1) : undefined;
   if (!buyUpgrade(engine, state, code)) return undefined;
 
-  return { kind: "buyUpgrade", code, cost, tSimMs };
+  return { kind: "buyUpgrade", code, cost, ...(costs && { costs }), tSimMs };
 }
 
 function applyPrestige(state: GameState, engine: Engine, code: string, tSimMs: number): SimAction | undefined {

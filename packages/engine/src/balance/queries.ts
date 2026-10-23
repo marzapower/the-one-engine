@@ -14,12 +14,12 @@ export function primaryCurrencyOf(state: GameState): Currency | undefined {
   return state.currencies.find((c) => c.primary);
 }
 
-/** Cost of the next single unit of a producer. */
+/** Cost of the next single unit of a producer (main cost only: `extraCosts` are not included, see `Engine.costLinesToBuyNext`). */
 export function nextUnitCost(engine: Engine, producer: Producer): Numerus {
   return engine.costToBuyNext(producer, 1);
 }
 
-/** Cost of the next level of an upgrade. */
+/** Cost of the next level of an upgrade (main cost only: `extraCosts` are not included, see `Engine.costLinesToBuyNext`). */
 export function upgradeCost(engine: Engine, upgrade: Upgrade): Numerus {
   return engine.costToBuyNext(upgrade, 1);
 }

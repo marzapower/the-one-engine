@@ -45,6 +45,7 @@ export type {
   Ownable,
   Growable,
   Buyable,
+  ExtraCost,
   Resettable,
 } from "./models/base";
 export { ScalingMethod, ScaleOn } from "./models/base";
@@ -88,13 +89,13 @@ export { DefaultTimeProvider, DefaultStateAdapter, DefaultEffectResolver, Defaul
 // Pure math: growth, pricing, saturation, prestige gain, modifiers
 // ============================================================================
 export { computeGrowthFunction, resolveGrowthArgs } from "./core/growth";
-export { costToBuyNext, maxBuyableAmount, costToBuy } from "./core/pricing";
+export { costToBuyNext, maxBuyableAmount, costToBuy, costLinesToBuyNext, maxBuyableAcrossPools, type CostLine } from "./core/pricing";
 export { supportRatio, capacityPush, dragFactor, coolingDelta, type SupportInputs } from "./core/saturation";
 export { DEFAULT_PRESTIGE_DRIVE, prestigeDrive, prestigeGainMultiplier, deliveredPrestigeGain } from "./core/prestige-gain";
 export { collectModifiers, applyModifiers, isTransientTargetPath, type Modifier } from "./core/modifiers";
 
 export { foldCurrencyChannel } from "./core/prestige-gain";
-export { isUnlocked, findCostPool, upgradePurchaseBlock, buyUpgrade, producerPurchaseBlock, buyProducer, type PurchaseBlock } from "./core/purchase";
+export { isUnlocked, findCostPool, upgradePurchaseBlock, buyUpgrade, producerPurchaseBlock, buyProducer, costShortfalls, type PurchaseBlock } from "./core/purchase";
 export { resolveTargetCode, continuousPrestigeGain, prestigeRunRate, rateRulePrestige, prestigesRestartedBy } from "./core/prestige-run";
 export { levelsAfterPrestige } from "./core/behaviors";
 

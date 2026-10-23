@@ -1,7 +1,8 @@
 import type { Engine } from "../core/engine";
 import { DEFAULT_PRESTIGE_DRIVE } from "../core/prestige-gain";
-import { isUnlocked } from "../core/purchase";
-import type { Producer, Upgrade } from "../models/base";
+import type { CostLine } from "../core/pricing";
+import { findCostPool, isUnlocked } from "../core/purchase";
+import type { Buyable, Upgrade } from "../models/base";
 import { type Decimal, N, NR } from "../nums";
 import type { GameState } from "../state";
 import { horizonValueOfUpgrade } from "./horizon-value";
@@ -132,8 +133,45 @@ interface PurchaseCandidate {
   kind: "producer" | "upgrade";
   code: string;
   currencyCode: string;
+  /** Main cost (what the valuation and the efficiency use). */
   cost: Decimal;
+  /** Every pool paid by the next unit, main line first (extras only for entities with `extraCosts`). */
+  lines: CostLine[];
   efficiency: Decimal;
+}
+
+/**
+ * Lines of the next unit of `entity` at `boughtSoFar` (the offset already
+ * planned in this decision). Without `extraCosts` it is the single main line
+ * from `costToBuyNext`, exactly the historical quote.
+ *
+ * Known limit (stage 3): valuation and efficiency stay on the MAIN cost; the
+ * value of the balances sacrificed by the extra lines is not priced.
+ */
+function quoteLines(engine: Engine, entity: Buyable, boughtSoFar: Decimal): CostLine[] {
+  const quoted = { ...entity, bought: NR(boughtSoFar) };
+  if (!entity.extraCosts?.length) return [{ currencyCode: entity.currencyCode, cost: engine.costToBuyNext(quoted, 1) }];
+  return engine.costLinesToBuyNext(quoted, 1);
+}
+
+/** Open gate and every defined pool (main and each extra, free or not) present: the core blocks a missing pool with `noPool`. */
+function isQuotable(state: GameState, entity: Buyable): boolean {
+  return isUnlocked(state, entity) && [entity.currencyCode, ...(entity.extraCosts ?? []).map((e) => e.currencyCode)].every((code) => findCostPool(state, code) !== undefined);
+}
+
+/** Main cost of a quote (its first line; the core always puts it first). */
+function mainCost(lines: CostLine[]): Decimal {
+  return N(lines[0]?.cost ?? 0);
+}
+
+/** True when every line fits the (shared) budget of its pool. */
+function linesFit(lines: CostLine[], getBudget: (currencyCode: string) => Decimal): boolean {
+  return lines.every((line) => getBudget(line.currencyCode).gte(N(line.cost)));
+}
+
+/** Takes every line out of the shared budgets. */
+function spendLines(lines: CostLine[], budgets: Map<string, Decimal>, getBudget: (currencyCode: string) => Decimal): void {
+  for (const line of lines) budgets.set(line.currencyCode, getBudget(line.currencyCode).sub(N(line.cost)));
 }
 
 /**
@@ -327,9 +365,8 @@ export class GreedyBot implements BotPolicy {
         const candidate = this.pickBestCandidate(engine, state, producerOffsets, upgradeOffsets, excluded, allowed);
         if (!candidate) break;
 
-        const budget = getBudget(candidate.currencyCode);
-        if (budget.gte(candidate.cost)) {
-          budgets.set(candidate.currencyCode, budget.sub(candidate.cost));
+        if (linesFit(candidate.lines, getBudget)) {
+          spendLines(candidate.lines, budgets, getBudget);
 
           if (candidate.kind === "producer") {
             const offset = producerOffsets.get(candidate.code) ?? N(0);
@@ -352,7 +389,7 @@ export class GreedyBot implements BotPolicy {
     if (this.options.shopPriority === null) {
       this.planUtilityPurchases(engine, state, intents, getBudget, budgets, upgradeOffsets);
     } else {
-      this.planShopPurchases(engine, state, this.options.shopPriority, intents, producerOffsets, upgradeOffsets);
+      this.planShopPurchases(engine, state, this.options.shopPriority, intents, producerOffsets, upgradeOffsets, getBudget, budgets);
     }
 
     return intents;
@@ -363,7 +400,12 @@ export class GreedyBot implements BotPolicy {
    * unlocked, not-maxed entry of the list is the target; it is bought while
    * affordable, otherwise only later entries priced at most `crumbFraction` x
    * the target are bought, within `crumbFraction` x the balance at the start
-   * of the decision. Offsets are shared with the main pass so quotes stay right.
+   * of the decision. Offsets AND the budget map are shared with the main pass
+   * (and the utility pass): a pool is spent once per decision, whoever pays
+   * from it. The crumb cap uses the balance at the start of the decision, not
+   * the shared (possibly already reduced) budget. An entry is bought only when
+   * every one of its cost lines fits its pool; the crumb price test stays on
+   * the main cost.
    */
   private planShopPurchases(
     engine: Engine,
@@ -372,6 +414,8 @@ export class GreedyBot implements BotPolicy {
     intents: BotIntent[],
     producerOffsets: Map<string, Decimal>,
     upgradeOffsets: Map<string, Decimal>,
+    getBudget: (currencyCode: string) => Decimal,
+    budgets: Map<string, Decimal>,
   ): void {
     const prestigeCurrencies = new Set(state.prestiges.map((p) => p.currencyCode));
     const { crumbFraction } = this.options;
@@ -395,20 +439,20 @@ export class GreedyBot implements BotPolicy {
       entries.push({ key, kind: kind as "producer" | "upgrade", code, currencyCode: entity.currencyCode });
     }
 
-    // Next-unit quote of an entry given the offsets already bought in this decision; null when maxed or locked.
-    const quote = (entry: ShopEntry): Decimal | null => {
+    // Next-unit lines of an entry given the offsets already bought in this decision; null when maxed or locked.
+    const quote = (entry: ShopEntry): CostLine[] | null => {
       if (entry.kind === "producer") {
         const producer = state.producers.find((p) => p.code === entry.code);
-        if (!producer || !isUnlocked(state, producer)) return null;
+        if (!producer || !isQuotable(state, producer)) return null;
         const boughtSoFar = N(producer.bought).add(producerOffsets.get(entry.code) ?? 0);
         if (producer.max !== undefined && boughtSoFar.gte(N(producer.max))) return null;
-        return N(engine.costToBuyNext({ ...producer, bought: NR(boughtSoFar) }, 1));
+        return quoteLines(engine, producer, boughtSoFar);
       }
       const upgrade = state.upgrades.find((u) => u.code === entry.code);
-      if (!upgrade || !isUnlocked(state, upgrade)) return null;
+      if (!upgrade || !isQuotable(state, upgrade)) return null;
       const boughtSoFar = N(upgrade.bought).add(upgradeOffsets.get(entry.code) ?? 0);
       if (upgrade.max !== undefined && boughtSoFar.gte(N(upgrade.max))) return null;
-      return N(engine.costToBuyNext({ ...upgrade, bought: NR(boughtSoFar) }, 1));
+      return quoteLines(engine, upgrade, boughtSoFar);
     };
 
     const buy = (entry: ShopEntry): void => {
@@ -424,37 +468,38 @@ export class GreedyBot implements BotPolicy {
     for (const currencyCode of new Set(entries.map((e) => e.currencyCode))) {
       const list = entries.filter((e) => e.currencyCode === currencyCode);
       const pool = state.currencies.find((c) => c.code === currencyCode);
-      let budget = pool ? N(pool.amount) : N(0);
-      const crumbCap = budget.mul(crumbFraction);
+      const crumbCap = (pool ? N(pool.amount) : N(0)).mul(crumbFraction);
       let crumbsSpent = N(0);
 
       while (intents.length < MAX_INTENTS_PER_DECISION) {
         let targetIndex = -1;
         let target: ShopEntry | undefined;
-        let targetCost: Decimal | null = null;
+        let targetLines: CostLine[] | null = null;
         for (const [i, entry] of list.entries()) {
-          const cost = quote(entry);
-          if (cost === null || cost.lte(0)) continue;
+          const lines = quote(entry);
+          if (lines === null || mainCost(lines).lte(0)) continue;
           targetIndex = i;
           target = entry;
-          targetCost = cost;
+          targetLines = lines;
           break;
         }
-        if (!target || targetCost === null) break;
+        if (!target || targetLines === null) break;
 
-        if (budget.gte(targetCost)) {
-          budget = budget.sub(targetCost);
+        if (linesFit(targetLines, getBudget)) {
+          spendLines(targetLines, budgets, getBudget);
           buy(target);
           continue;
         }
 
         // Saving for the target: crumbs only, from the later entries.
-        const crumbLimit = targetCost.mul(crumbFraction);
+        const crumbLimit = mainCost(targetLines).mul(crumbFraction);
         let boughtCrumb = false;
         for (const entry of list.slice(targetIndex + 1)) {
-          const cost = quote(entry);
-          if (cost === null || cost.lte(0) || cost.gt(crumbLimit) || cost.gt(budget) || crumbsSpent.add(cost).gt(crumbCap)) continue;
-          budget = budget.sub(cost);
+          const lines = quote(entry);
+          if (lines === null) continue;
+          const cost = mainCost(lines);
+          if (cost.lte(0) || cost.gt(crumbLimit) || !linesFit(lines, getBudget) || crumbsSpent.add(cost).gt(crumbCap)) continue;
+          spendLines(lines, budgets, getBudget);
           crumbsSpent = crumbsSpent.add(cost);
           buy(entry);
           boughtCrumb = true;
@@ -485,10 +530,10 @@ export class GreedyBot implements BotPolicy {
     for (;;) {
       if (intents.length >= MAX_INTENTS_PER_DECISION) return;
 
-      let cheapest: { code: string; currencyCode: string; cost: Decimal } | null = null;
+      let cheapest: { code: string; currencyCode: string; cost: Decimal; lines: CostLine[] } | null = null;
       for (const upgrade of state.upgrades) {
         if (!prestigeCurrencies.has(upgrade.currencyCode)) continue;
-        if (!isUnlocked(state, upgrade)) continue;
+        if (!isQuotable(state, upgrade)) continue;
 
         const offset = upgradeOffsets.get(upgrade.code) ?? N(0);
         const boughtSoFar = N(upgrade.bought).add(offset);
@@ -497,20 +542,21 @@ export class GreedyBot implements BotPolicy {
         const quoted: Upgrade = { ...upgrade, bought: NR(boughtSoFar) };
         if (horizonValueOfUpgrade(engine, state, quoted, this.options.horizonMs).gt(0)) continue; // priced by the main pass
 
-        const cost = N(engine.costToBuyNext(quoted, 1));
-        if (cost.lte(0) || cost.gt(getBudget(upgrade.currencyCode))) continue;
+        const lines = quoteLines(engine, upgrade, boughtSoFar);
+        const cost = mainCost(lines);
+        if (cost.lte(0) || !linesFit(lines, getBudget)) continue;
 
         // Opportunity-cost guard (cautious buyer): when unspent prestige
         // currency drives the passive, skip buys that hurt it too much.
         if (this.passiveLossFraction(engine, state, upgrade.currencyCode, getBudget(upgrade.currencyCode), cost) > this.options.maxPassiveLossPct) continue;
 
         if (!cheapest || cost.lt(cheapest.cost)) {
-          cheapest = { code: upgrade.code, currencyCode: upgrade.currencyCode, cost };
+          cheapest = { code: upgrade.code, currencyCode: upgrade.currencyCode, cost, lines };
         }
       }
 
       if (!cheapest) return;
-      budgets.set(cheapest.currencyCode, getBudget(cheapest.currencyCode).sub(cheapest.cost));
+      spendLines(cheapest.lines, budgets, getBudget);
       upgradeOffsets.set(cheapest.code, (upgradeOffsets.get(cheapest.code) ?? N(0)).add(1));
       intents.push({ kind: "buyUpgrade", code: cheapest.code });
     }
@@ -563,18 +609,18 @@ export class GreedyBot implements BotPolicy {
       const key = `producer:${producer.code}` as const;
       if (excluded.has(key) || (allowed && !allowed.has(key))) continue;
       if (shopCurrencies?.has(producer.currencyCode)) continue; // the shop policy owns it
-      if (!isUnlocked(state, producer)) continue;
+      if (!isQuotable(state, producer)) continue;
 
       const offset = producerOffsets.get(producer.code) ?? N(0);
       if (producer.max !== undefined && N(producer.bought).add(offset).gte(N(producer.max))) continue;
-      const quoted: Producer = { ...producer, bought: NR(N(producer.bought).add(offset)) };
-      const cost = N(engine.costToBuyNext(quoted, 1));
+      const lines = quoteLines(engine, producer, N(producer.bought).add(offset));
+      const cost = mainCost(lines);
 
       const valuation = valuePurchase(engine, state, { kind: "producer", producer }, cost, horizonMs, valueOpts);
       if (!valuation) continue;
 
       if (!best || valuation.efficiency.gt(best.efficiency)) {
-        best = { kind: "producer", code: producer.code, currencyCode: producer.currencyCode, cost, efficiency: valuation.efficiency };
+        best = { kind: "producer", code: producer.code, currencyCode: producer.currencyCode, cost, lines, efficiency: valuation.efficiency };
       }
     }
 
@@ -582,20 +628,21 @@ export class GreedyBot implements BotPolicy {
       const key = `upgrade:${upgrade.code}` as const;
       if (excluded.has(key) || (allowed && !allowed.has(key))) continue;
       if (shopCurrencies?.has(upgrade.currencyCode)) continue; // the shop policy owns it
-      if (!isUnlocked(state, upgrade)) continue;
+      if (!isQuotable(state, upgrade)) continue;
 
       const offset = upgradeOffsets.get(upgrade.code) ?? N(0);
       const boughtSoFar = N(upgrade.bought).add(offset);
       if (upgrade.max !== undefined && boughtSoFar.gte(N(upgrade.max))) continue;
 
       const quoted: Upgrade = { ...upgrade, bought: NR(boughtSoFar) };
-      const cost = N(engine.costToBuyNext(quoted, 1));
+      const lines = quoteLines(engine, upgrade, boughtSoFar);
+      const cost = mainCost(lines);
 
       const valuation = valuePurchase(engine, state, { kind: "upgrade", upgrade: quoted }, cost, horizonMs, valueOpts);
       if (!valuation) continue;
 
       if (!best || valuation.efficiency.gt(best.efficiency)) {
-        best = { kind: "upgrade", code: upgrade.code, currencyCode: upgrade.currencyCode, cost, efficiency: valuation.efficiency };
+        best = { kind: "upgrade", code: upgrade.code, currencyCode: upgrade.currencyCode, cost, lines, efficiency: valuation.efficiency };
       }
     }
 

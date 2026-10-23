@@ -244,6 +244,8 @@ export function shopFactorWithBudget(engine: Engine, state: GameState, currencyC
   for (const upgrade of state.upgrades) {
     if (upgrade.currencyCode !== currencyCode) continue;
     if (!isUnlocked(state, upgrade)) continue;
+    // Known underestimate: an upgrade that also costs other pools is left out (the estimate prices the main pool only).
+    if (upgrade.extraCosts?.length) continue;
 
     let levels = N(0);
     for (let i = 0; i < 64; i++) {

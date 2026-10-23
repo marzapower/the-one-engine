@@ -1,4 +1,5 @@
 import type { Engine } from "../core/engine";
+import type { CostLine } from "../core/pricing";
 import type { Numerus } from "../nums";
 import type { GameState } from "../state";
 
@@ -22,10 +23,14 @@ import type { GameState } from "../state";
 /** A purchase/prestige intent decided by a policy. The harness validates and applies it. */
 export type BotIntent = { kind: "buyProducer"; code: string; amount: number } | { kind: "buyUpgrade"; code: string } | { kind: "prestige"; code: string };
 
-/** An applied intent, enriched by the harness with cost/gain and sim time. */
+/**
+ * An applied intent, enriched by the harness with cost/gain and sim time.
+ * `cost` is always the MAIN cost (reports stay unchanged); `costs` lists every
+ * pool actually paid and is present only for entities with non-empty `extraCosts`.
+ */
 export type SimAction =
-  | { kind: "buyProducer"; code: string; amount: number; cost: Numerus; tSimMs: number }
-  | { kind: "buyUpgrade"; code: string; cost: Numerus; tSimMs: number }
+  | { kind: "buyProducer"; code: string; amount: number; cost: Numerus; costs?: CostLine[]; tSimMs: number }
+  | { kind: "buyUpgrade"; code: string; cost: Numerus; costs?: CostLine[]; tSimMs: number }
   | { kind: "prestige"; code: string; gain: Numerus; tSimMs: number };
 
 export interface BotContext {

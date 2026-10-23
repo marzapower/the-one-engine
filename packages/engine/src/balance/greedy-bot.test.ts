@@ -341,3 +341,48 @@ describe("GreedyBot visit gate (minPurchaseImpact)", () => {
     expect(bot.decide(ctxFor(state))).toEqual([]);
   });
 });
+
+describe("GreedyBot — extra costs", () => {
+  const withExtra = (p: Producer, gems: number): Producer => ({ ...p, extraCosts: [{ currencyCode: "gems", scaling: linearScaling(gems, 0) }] });
+  const stateWith = (primary: number, gemsAmount: number, producers: Producer[]) =>
+    baseState({ producers, currencies: [currency("primary", primary), currency("gems", gemsAmount)] });
+  const bought = (state: GameState) => new GreedyBot().decide(ctxFor(state)).map((i) => (i.kind === "buyProducer" ? i.code : i.kind));
+
+  it("does not plan a purchase when an extra pool is short, even with the main pool full", () => {
+    expect(bought(stateWith(1000, 4, [withExtra(producer("A", 1, 10), 5)]))).toEqual([]);
+    expect(bought(stateWith(1000, 5, [withExtra(producer("A", 1, 10), 5)]))).toEqual(["A"]);
+  });
+
+  it("takes every line out of the budgets, so a second unit needs both pools again", () => {
+    expect(bought(stateWith(1000, 10, [withExtra(producer("A", 1, 10), 5)]))).toEqual(["A", "A"]);
+    expect(bought(stateWith(1000, 14, [withExtra(producer("A", 1, 10), 5)]))).toEqual(["A", "A"]);
+    expect(bought(stateWith(15, 1000, [withExtra(producer("A", 1, 10), 5)]))).toEqual(["A"]);
+  });
+
+  it("quotes the next unit with fromBought and the offset already planned", () => {
+    // Extras are free for the first unit only: 1 unit pays no gems, the 2nd pays 5, the 3rd 5.
+    const a = { ...producer("A", 1, 10), extraCosts: [{ currencyCode: "gems", scaling: linearScaling(5, 0), fromBought: 1 }] };
+    expect(bought(stateWith(1000, 5, [a]))).toEqual(["A", "A"]);
+    expect(bought(stateWith(1000, 10, [a]))).toEqual(["A", "A", "A"]);
+  });
+
+  it("lets a plain producer and one with an extra share the same pool", () => {
+    const a = withExtra(producer("A", 1, 10), 8);
+    const b = { ...producer("B", 1, 10, "gems"), amount: NR(0) }; // B is paid in gems
+    const out = bought(stateWith(1000, 10, [a, b]));
+    expect(out.filter((c) => c === "A").length + out.filter((c) => c === "B").length).toBe(out.length);
+    // Gems spent by A (8) and by B (10 each) never exceed the 10 available.
+    const spent = out.reduce((total, code) => total + (code === "A" ? 8 : 10), 0);
+    expect(spent).toBeLessThanOrEqual(10);
+  });
+
+  it("does not plan a purchase whose extra pool is missing, even while that extra is still free", () => {
+    const a = { ...producer("A", 1, 10), extraCosts: [{ currencyCode: "ghost", scaling: linearScaling(5, 0), fromBought: 1 }] };
+    expect(bought(stateWith(1000, 0, [a]))).toEqual([]);
+  });
+
+  it("leaves intents identical for a game without extra costs", () => {
+    const s = stateWith(25, 0, [producer("A", 1, 10), producer("B", 5, 20)]);
+    expect(new GreedyBot().decide(ctxFor(s))).toEqual([{ kind: "buyProducer", code: "B", amount: 1 }]);
+  });
+});

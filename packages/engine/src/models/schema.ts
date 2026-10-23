@@ -126,6 +126,12 @@ export const ProducerCapacitySchema = z.object({
   overflowRate: z.number().optional(),
 });
 
+export const ExtraCostSchema = z.object({
+  currencyCode: z.string(),
+  scaling: GrowthFunctionSchema,
+  fromBought: z.number().int().nonnegative().optional(),
+});
+
 export const ProducerSchema = z.object({
   code: z.string(),
   name: z.string(),
@@ -134,6 +140,7 @@ export const ProducerSchema = z.object({
   bought: NumerusSchema,
   currencyCode: z.string(),
   scaling: GrowthFunctionSchema,
+  extraCosts: z.array(ExtraCostSchema).optional(),
   produces: z.array(ProducerTargetSchema),
   persecDelta: NumerusSchema.optional(),
   resetsOn: z.array(z.string()).optional(),
@@ -190,6 +197,7 @@ export const UpgradeSchema = z.object({
   bought: NumerusSchema,
   currencyCode: z.string(),
   scaling: GrowthFunctionSchema,
+  extraCosts: z.array(ExtraCostSchema).optional(),
   effects: z.array(EffectSchema),
   behaviors: z.array(UpgradeBehaviorSchema).optional(),
   resetsOn: z.array(z.string()).optional(),

@@ -1,4 +1,4 @@
-import type { Effect, GrowthFunction, Target, Unlock } from "../models/base";
+import type { Buyable, Effect, GrowthFunction, Target, Unlock } from "../models/base";
 import { type Decimal, type GenericNumberInput, N } from "../nums";
 import type { BootstrapReport, GameState } from "../state";
 import type { EngineServices } from "./di/types";
@@ -184,6 +184,27 @@ export function walkState(
     }
   };
 
+  const poolCodes = new Set<string>([...state.currencies.map((c) => c.code), ...state.producers.map((p) => p.code)]);
+
+  const validateExtraCosts = (item: Buyable, context: string, path: (string | number)[]): void => {
+    const seen = new Set<string>([item.currencyCode]);
+    (item.extraCosts ?? []).forEach((extra, index) => {
+      const extraPath = [...path, "extraCosts", index];
+      if (!poolCodes.has(extra.currencyCode)) {
+        error("unknownCostPool", [...extraPath, "currencyCode"], `${context}: extra cost pool "${extra.currencyCode}" is neither a currency nor a producer`);
+      }
+      if (seen.has(extra.currencyCode)) {
+        error("invalidShape", [...extraPath, "currencyCode"], `${context}: extra cost pool "${extra.currencyCode}" is already paid by another cost`);
+      }
+      seen.add(extra.currencyCode);
+      const from = extra.fromBought;
+      if (from !== undefined && (!Number.isInteger(from) || from < 0)) {
+        error("outOfRange", [...extraPath, "fromBought"], `${context}: extra cost fromBought must be an integer >= 0`, { min: 0 });
+      }
+      validateGrowthFunction(extra.scaling, `${context} extra cost ${extra.currencyCode}`, [...extraPath, "scaling"]);
+    });
+  };
+
   const validateEffect = (effect: Effect, context: string, path: (string | number)[]): void => {
     const problem = checkTarget(state, { registry }, effect.target);
     if (problem?.code === "unresolvablePath") {
@@ -235,6 +256,7 @@ export function walkState(
     });
 
     validateGrowthFunction(producer.scaling, `producer ${producer.code} scaling`, [...path, "scaling"]);
+    validateExtraCosts(producer, `Producer ${producer.code}`, path);
     validateUnlock(producer.unlock, `Producer ${producer.code}`, path);
 
     if (producer.capacity) {
@@ -260,6 +282,7 @@ export function walkState(
     upgrade.effects.forEach((effect, effectIndex) => validateEffect(effect, `Upgrade ${upgrade.code}`, [...path, "effects", effectIndex]));
 
     validateGrowthFunction(upgrade.scaling, `upgrade ${upgrade.code} scaling`, [...path, "scaling"]);
+    validateExtraCosts(upgrade, `Upgrade ${upgrade.code}`, path);
     validateUnlock(upgrade.unlock, `Upgrade ${upgrade.code}`, path);
 
     if (upgrade.grantOnPurchase) {

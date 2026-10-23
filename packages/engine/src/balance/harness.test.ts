@@ -4,7 +4,7 @@ import { silentLogger } from "../core/di/defaults";
 import { Engine } from "../core/engine";
 import type { Currency, Prestige, Producer, Upgrade } from "../models/base";
 import { ScaleOn, ScalingMethod } from "../models/base";
-import { NR } from "../nums";
+import { N, NR } from "../nums";
 import { createInitialState } from "../state";
 import type { GameState } from "../state";
 import { MockTimeProvider } from "../testing/MockTimeProvider";
@@ -12,6 +12,7 @@ import type { ResolvedClickable } from "./definition";
 import { GreedyBot } from "./greedy-bot";
 import { runBalanceSim } from "./harness";
 import { MetricsCollector } from "./metrics";
+import type { SimAction } from "./types";
 
 const linearScaling = (base: number, coeff: number) => ({
   base: NR(base),
@@ -341,5 +342,67 @@ describe("MetricsCollector waiting option", () => {
     expect(() => new MetricsCollector(engine, {}, [], { ...ok, minImpact: Number.NaN })).toThrow(/minImpact/);
     expect(() => new MetricsCollector(engine, {}, [], { ...ok, horizonMs: 0 })).toThrow(/horizonMs/);
     expect(() => new MetricsCollector(engine, {}, [], { ...ok, horizonMs: Number.POSITIVE_INFINITY })).toThrow(/horizonMs/);
+  });
+});
+
+describe("runBalanceSim — extra costs in actions", () => {
+  it("adds `costs` to an action only for entities with extra costs", () => {
+    const state = tinyState();
+    state.currencies = [
+      { code: "primary", name: "Primary", primary: true, amount: NR(1000), persecDelta: NR(0) },
+      { code: "gems", name: "Gems", amount: NR(1000) },
+    ];
+    const plain = { ...state.producers[0], code: "plain", scaling: linearScaling(5, 0) } as Producer;
+    const rich = { ...plain, code: "rich", extraCosts: [{ currencyCode: "gems", scaling: linearScaling(3, 0) }] } as Producer;
+    const up = (code: string, extraCosts?: Upgrade["extraCosts"]): Upgrade => ({
+      code,
+      name: code,
+      currencyCode: "primary",
+      amount: NR(0),
+      bought: NR(0),
+      scaling: linearScaling(7, 0),
+      effects: [],
+      extraCosts,
+    });
+    state.producers = [plain, rich];
+    state.upgrades = [up("uPlain"), up("uRich", [{ currencyCode: "gems", scaling: linearScaling(2, 0) }])];
+    state.prestiges = [];
+
+    let decided = false;
+    const bot = {
+      id: "scripted",
+      decide: () => {
+        if (decided) return [];
+        decided = true;
+        return [
+          { kind: "buyProducer" as const, code: "plain", amount: 1 },
+          { kind: "buyProducer" as const, code: "rich", amount: 2 },
+          { kind: "buyUpgrade" as const, code: "uPlain" },
+          { kind: "buyUpgrade" as const, code: "uRich" },
+        ];
+      },
+    };
+    const engine = new Engine(250, { time: new MockTimeProvider(250), logger: silentLogger });
+    const collector = new MetricsCollector(engine);
+    const actions: SimAction[] = [];
+    const original = collector.onAction.bind(collector);
+    collector.onAction = (action, s) => {
+      actions.push(action);
+      original(action, s);
+    };
+
+    runBalanceSim({ state, bot, engine, collector, params: { durationMs: 2000, sampleIntervalMs: 1000, decisionIntervalMs: 1000 } });
+
+    const byCode = (code: string) => actions.find((a) => a.kind !== "prestige" && a.code === code) as Extract<SimAction, { cost: unknown }>;
+    expect(actions).toHaveLength(4);
+    expect(byCode("plain").costs).toBeUndefined();
+    expect("costs" in byCode("plain")).toBe(false);
+    expect(byCode("uPlain").costs).toBeUndefined();
+    expect(byCode("rich").cost).toEqual(NR(10));
+    expect(byCode("rich").costs?.map((l) => [l.currencyCode, N(l.cost).toNumber()])).toEqual([
+      ["primary", 10],
+      ["gems", 6],
+    ]);
+    expect(byCode("uRich").costs?.map((l) => l.currencyCode)).toEqual(["primary", "gems"]);
   });
 });

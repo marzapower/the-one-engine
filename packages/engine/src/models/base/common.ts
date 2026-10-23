@@ -19,6 +19,18 @@ export interface Growable extends Ownable {
   persecDelta?: Numerus;
 }
 
+/** A further cost of a Buyable, paid together with the main one from another pool. */
+export interface ExtraCost {
+  /** Pool code: a currency, or a producer whose stock is spent (same rules as `Buyable.currencyCode`). */
+  currencyCode: string;
+
+  /** Price of the unit at position `bought`, resolved exactly like `Buyable.scaling`. */
+  scaling: GrowthFunction;
+
+  /** Units at positions below this one do not pay this cost. Integer >= 0, default 0. */
+  fromBought?: number;
+}
+
 /** An entity that can be bought with a currency or with another entity's stock. */
 export interface Buyable extends Ownable {
   /** Units bought so far. Drives the cost curve. */
@@ -29,6 +41,9 @@ export interface Buyable extends Ownable {
 
   /** Cost curve: the price of the next unit as a function of `bought`. */
   scaling: GrowthFunction;
+
+  /** Costs paid together with the main one, each from its own pool. A unit is bought only when every pool covers its share. */
+  extraCosts?: ExtraCost[];
 
   /** Maximum number of units that can be bought. */
   max?: Numerus;

@@ -279,3 +279,56 @@ describe("ignoreUnownedTargets and select", () => {
     expect(new GreedyBot({ ignoreUnownedTargets: true }).decide(ctx(s)).some((i) => i.kind === "buyUpgrade")).toBe(false);
   });
 });
+
+describe("extra costs in the shop and utility passes", () => {
+  const gemsCost = (cost: number) => [{ currencyCode: "gems", scaling: linear(cost, 0) }];
+  const make = (ifAmount: number, gems: number, producers: Producer[], upgrades: Upgrade[]) =>
+    state({
+      currencies: [currency("primary", 100, 10), currency("if", ifAmount), currency("gems", gems)],
+      prestiges: [prestige("fragmentation", "if")],
+      producers,
+      upgrades,
+    });
+
+  it("a normal purchase and a shop purchase draw on one shared pool", () => {
+    // The producer costs 30 "if" as an extra; the shop upgrade costs 20 "if". Only 40 are there: one of the two.
+    const p: Producer = { ...producer("P", 10), extraCosts: [{ currencyCode: "if", scaling: linear(30, 0) }] };
+    const s = make(40, 0, [p], [shopUpgrade("s", 20)]);
+    const intents = new GreedyBot({ shopPriority: ["upgrade:s"] }).decide(ctx(s));
+    expect(intents).toEqual([{ kind: "buyProducer", code: "P", amount: 1 }]);
+  });
+
+  it("the shop crumb cap still uses the balance at the start of the decision", () => {
+    // Target costs 100 (unaffordable at 50); the crumb costs 5 = crumbFraction x target, and the cap is 10% of 50 = 5.
+    const p: Producer = { ...producer("P", 10), extraCosts: [{ currencyCode: "if", scaling: linear(30, 0) }] };
+    const s = make(50, 0, [p], [shopUpgrade("target", 100), shopUpgrade("crumb", 5)]);
+    // The main pass spends 30 "if"; the shop then has 20 left, and the 5-crumb is within the cap of 5 (of 50).
+    const intents = new GreedyBot({ shopPriority: ["upgrade:target", "upgrade:crumb"] }).decide(ctx(s));
+    expect(intents).toEqual([
+      { kind: "buyProducer", code: "P", amount: 1 },
+      { kind: "buyUpgrade", code: "crumb" },
+    ]);
+  });
+
+  it("a shop entry is bought only when its extra pool covers it", () => {
+    const entry = shopUpgrade("s", 5, { extraCosts: gemsCost(10) });
+    const bot = () => new GreedyBot({ shopPriority: ["upgrade:s"] });
+    expect(bot().decide(ctx(make(100, 9, [], [entry])))).toEqual([]);
+    expect(bot().decide(ctx(make(100, 10, [], [entry])))).toEqual(buysOf("s"));
+  });
+
+  it("utility: main pool enough but extra pool short buys nothing", () => {
+    const u = shopUpgrade("util", 5, { max: undefined, extraCosts: gemsCost(10) });
+    expect(new GreedyBot().decide(ctx(make(100, 3, [], [u])))).toEqual([]);
+  });
+
+  it("utility: two upgrades competing for one extra pool, only the cheapest fits", () => {
+    const cheap = shopUpgrade("cheap", 5, { extraCosts: gemsCost(10) });
+    const dear = shopUpgrade("dear", 6, { extraCosts: gemsCost(10) });
+    expect(new GreedyBot().decide(ctx(make(100, 15, [], [dear, cheap])))).toEqual(buysOf("cheap"));
+  });
+});
+
+function buysOf(...codes: string[]) {
+  return codes.map((code) => ({ kind: "buyUpgrade", code }));
+}

@@ -10,8 +10,8 @@ import { type Modifier, applyModifiers, collectModifiers, isTransientTargetPath 
 import { type OfflineReport, offlineTickLength } from "./offline";
 import { deliveredPrestigeGain, prestigeDrive, prestigeGainMultiplier } from "./prestige-gain";
 import { advancePrestigeRuns, reinitPrestigeRuns } from "./prestige-run";
-import { costToBuy, costToBuyNext, maxBuyableAmount } from "./pricing";
-import { type PurchaseBlock, buyProducer, buyUpgrade, isUnlocked, producerPurchaseBlock, upgradePurchaseBlock } from "./purchase";
+import { type CostLine, costLinesToBuyNext, costToBuy, costToBuyNext, maxBuyableAcrossPools, maxBuyableAmount } from "./pricing";
+import { type PurchaseBlock, buyProducer, buyUpgrade, costShortfalls, findCostPool, isUnlocked, producerPurchaseBlock, upgradePurchaseBlock } from "./purchase";
 import { EffectRegistry } from "./registries/effect";
 import { GrowthRegistry } from "./registries/growth";
 import { StageRegistry } from "./registries/stage";
@@ -248,6 +248,21 @@ export class Engine {
 
   public costToBuy(item: Buyable, pool: { amount: Numerus }, amount?: GenericNumberInput, otherQuantity?: Numerus): { cost: Numerus; amount: Numerus } {
     return costToBuy(this.growths, item, pool, amount, otherQuantity);
+  }
+
+  /** Cost per pool of the next `amount` units: main line first, then each extra with a payable span. See `costLinesToBuyNext`. */
+  public costLinesToBuyNext(item: Buyable, amount: GenericNumberInput, otherQuantity?: Numerus): CostLine[] {
+    return costLinesToBuyNext(this.growths, item, amount, otherQuantity);
+  }
+
+  /** Most units every cost line allows, pools resolved in `state`. Ignores `max` and `unlock`. See `maxBuyableAcrossPools`. */
+  public maxBuyableAcrossPools(state: GameState, item: Buyable, otherQuantity?: Numerus): Numerus {
+    return maxBuyableAcrossPools(this.growths, item, (code) => findCostPool(state, code), otherQuantity);
+  }
+
+  /** Codes of the pools missing or too short for `amount` units, in line order. See `costShortfalls`. */
+  public costShortfalls(state: GameState, item: Buyable, amount = 1): string[] {
+    return costShortfalls(this, state, item, amount);
   }
 
   // --- prestige ----------------------------------------------------------

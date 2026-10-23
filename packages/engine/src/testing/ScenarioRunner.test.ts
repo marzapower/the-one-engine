@@ -97,6 +97,12 @@ describe("ScenarioRunner", () => {
     expect(() => runner.buy("xyz", 1)).toThrow("Producer not found: xyz");
   });
 
+  it("refuses a producer with extraCosts", () => {
+    const { runner, state } = newRunner();
+    state.producers[0]!.extraCosts = [{ currencyCode: "one", scaling: { base: NR(1), coeff: NR(0), scaleOn: ScaleOn.self, func: ScalingMethod.Linear } }];
+    expect(() => runner.buy("e1", 1)).toThrow("extraCosts");
+  });
+
   it("throws on unknown prestige code", () => {
     const { runner } = newRunner();
     expect(() => runner.resetPrestige("xyz")).toThrow("Prestige not found: xyz");

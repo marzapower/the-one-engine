@@ -28,6 +28,7 @@ export class ScenarioRunner {
   buy(producerCode: string, amount: number | "max"): this {
     const producer = this.state.producers.find((p) => p.code === producerCode);
     if (!producer) throw new Error(`Producer not found: ${producerCode}`);
+    if (producer.extraCosts?.length) throw new Error(`ScenarioRunner.buy supports a single cost pool: producer ${producerCode} has extraCosts`);
     const currency = this.state.currencies.find((c) => c.code === producer.currencyCode);
     if (!currency) throw new Error(`Currency not found: ${producer.currencyCode}`);
 

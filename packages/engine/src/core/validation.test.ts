@@ -635,3 +635,51 @@ describe("validateBootstrap — exact output on a broken state (pins the message
     expect(result.warnings).toEqual([]);
   });
 });
+
+describe("validateBootstrap — extra costs", () => {
+  const geo = { base: NR(10), coeff: NR(2), func: ScalingMethod.Geometric, scaleOn: ScaleOn.self };
+  const withExtras = (extraCosts: NonNullable<GameState["producers"][number]["extraCosts"]>): GameState => ({
+    ...createInitialState(),
+    currencies: [
+      { code: "one", name: "One", amount: NR(0) },
+      { code: "two", name: "Two", amount: NR(0) },
+    ],
+    producers: [{ code: "p", name: "P", amount: NR(0), bought: NR(0), currencyCode: "one", scaling: geo, produces: [], extraCosts }],
+    upgrades: [{ code: "u", name: "U", amount: NR(0), bought: NR(0), currencyCode: "one", scaling: geo, effects: [], extraCosts }],
+  });
+  const errorsOf = (state: GameState) => validateBootstrap(state, buildServices()).errors;
+
+  it("accepts extras paid in a currency or a producer's stock", () => {
+    expect(errorsOf(withExtras([{ currencyCode: "two", scaling: geo, fromBought: 1 }]))).toEqual([]);
+    const state = withExtras([{ currencyCode: "p2", scaling: geo }]);
+    state.producers.push({ ...state.producers[0]!, code: "p2", extraCosts: undefined });
+    expect(errorsOf(state)).toEqual([]);
+  });
+
+  it("reports an unknown pool on producers and upgrades", () => {
+    const errors = errorsOf(withExtras([{ currencyCode: "ghost", scaling: geo }]));
+    expect(errors).toContainEqual(expect.stringContaining('Producer p: extra cost pool "ghost"'));
+    expect(errors).toContainEqual(expect.stringContaining('Upgrade u: extra cost pool "ghost"'));
+  });
+
+  it("reports a pool equal to the main one or repeated among the extras", () => {
+    expect(errorsOf(withExtras([{ currencyCode: "one", scaling: geo }]))).toContainEqual(expect.stringContaining("already paid"));
+    const repeated = errorsOf(
+      withExtras([
+        { currencyCode: "two", scaling: geo },
+        { currencyCode: "two", scaling: geo },
+      ]),
+    );
+    expect(repeated.filter((e) => e.includes("already paid"))).toHaveLength(2);
+  });
+
+  it("reports a negative or fractional fromBought", () => {
+    expect(errorsOf(withExtras([{ currencyCode: "two", scaling: geo, fromBought: -1 }]))).toContainEqual(expect.stringContaining("fromBought"));
+    expect(errorsOf(withExtras([{ currencyCode: "two", scaling: geo, fromBought: 1.5 }]))).toContainEqual(expect.stringContaining("fromBought"));
+  });
+
+  it("validates the extra's growth function", () => {
+    const errors = errorsOf(withExtras([{ currencyCode: "two", scaling: { ...geo, func: "nope" } }]));
+    expect(errors).toContainEqual(expect.stringContaining('unknown growth method "nope"'));
+  });
+});
