@@ -528,6 +528,14 @@ describe("parseGameDefinition — on top of validateGameDefinition", () => {
   it("throws on input that is not an object", () => {
     expect(() => parseGameDefinition(null)).toThrow(/Invalid game definition/);
   });
+
+  it("validates against the registries of the context", () => {
+    const def = mutated((d) => (d.upgrades[0].effects[0].func = { base: 0, coeff: 0, func: "cubic", scaleOn: "self" }));
+    expect(() => parseGameDefinition(def)).toThrow(/growth method/);
+    const growths = new GrowthRegistry();
+    growths.register({ id: "cubic", version: "1.0.0", compute: (base) => N(base), capabilities: { hasClosedFormSum: false, hasClosedFormNmax: false } });
+    expect(parseGameDefinition(def, { growths })).toBe(def);
+  });
 });
 
 describe("validateGameDefinition — upgrade/economy fields", () => {

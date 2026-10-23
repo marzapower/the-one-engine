@@ -308,3 +308,47 @@ describe("Engine.performPrestige — keepLevels integration", () => {
     expect(calls).toEqual(["reset", "reset"]);
   });
 });
+
+describe("Engine.restartStock", () => {
+  it("previews the head start a prestige grants: add before mult, only producers with resetsTo modifiers", () => {
+    const makeProducer = (code: string): Producer => ({
+      code,
+      name: code,
+      currencyCode: "one",
+      amount: NR(0),
+      bought: NR(0),
+      produces: [{ code: "one", persec: NR(1) }],
+      scaling: { base: NR(10), coeff: NR(1.2), func: ScalingMethod.Geometric, scaleOn: ScaleOn.self },
+      resetsOn: ["reset"],
+    });
+    const constant = (value: number): GrowthFunction => ({ base: NR(value), coeff: NR(0), func: ScalingMethod.Linear, scaleOn: ScaleOn.self });
+    const state: GameState = {
+      ...createInitialState(),
+      producers: [makeProducer("e1"), makeProducer("e2")],
+      currencies: [
+        { code: "one", name: "one", amount: NR(1e6) },
+        { code: "if", name: "if", amount: NR(0), earned: NR(0) },
+      ],
+      prestiges: [makePrestige()],
+      upgrades: [
+        {
+          ...makeRunUpgrade("crew", { resetsOn: [] }),
+          bought: NR(1),
+          effects: [
+            { stage: 0, target: { kind: "producer", code: "e1", path: "resetsTo" }, type: "mult", func: constant(3) },
+            { stage: 0, target: { kind: "producer", code: "e1", path: "resetsTo" }, type: "add", func: constant(20) },
+          ],
+        },
+      ],
+    };
+
+    const engine = new Engine();
+    const stock = engine.restartStock(state, "reset");
+    expect([...stock.keys()]).toEqual(["e1"]);
+    expect(stock.get("e1")?.toNumber()).toBe(60); // (0 + 20) · 3
+
+    expect(engine.performPrestige(state, state.prestiges[0]!)).toBe(true);
+    expect(N(state.producers[0]!.amount).toNumber()).toBe(60);
+    expect(N(state.producers[1]!.amount).toNumber()).toBe(0);
+  });
+});

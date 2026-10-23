@@ -332,20 +332,33 @@ export class Engine {
   }
 
   /**
-   * Head-start grants: modifiers targeting a reset producer's `resetsTo`
-   * path are folded onto its base `resetsTo` and become its starting stock
-   * (never lowering it below what the reset already applied). Then the
-   * upgrade levels snapshotted before the reset are restored.
+   * Head-start stock each producer reset by `prestigeCode` would restart
+   * with, from the current state: the modifiers targeting its `resetsTo`
+   * folded onto its base `resetsTo`. Keyed by producer code; producers with
+   * no such modifier are absent. Read-only: the prestige itself uses it.
    */
-  private applyPostPrestigeGrants(state: GameState, prestigeCode: string, keptLevels: Map<string, Numerus>): void {
+  public restartStock(state: GameState, prestigeCode: string): Map<string, Decimal> {
     const mods = collectModifiers(state, this.services);
-
+    const stock = new Map<string, Decimal>();
     for (const producer of this.services.adapter.getProducers(state)) {
       if (!producer.resetsOn?.includes(prestigeCode)) continue;
       const grants = (mods.get(producer) ?? []).filter((m) => m.effect.target.path === "resetsTo");
       if (grants.length === 0) continue;
-      const start = applyModifiers(N(producer.resetsTo ?? 0), grants, this.services);
-      if (start.gt(N(producer.amount))) {
+      stock.set(producer.code, applyModifiers(N(producer.resetsTo ?? 0), grants, this.services));
+    }
+    return stock;
+  }
+
+  /**
+   * Head-start grants: each reset producer starts from its `restartStock`
+   * (never lowering it below what the reset already applied). Then the
+   * upgrade levels snapshotted before the reset are restored.
+   */
+  private applyPostPrestigeGrants(state: GameState, prestigeCode: string, keptLevels: Map<string, Numerus>): void {
+    const stock = this.restartStock(state, prestigeCode);
+    for (const producer of this.services.adapter.getProducers(state)) {
+      const start = stock.get(producer.code);
+      if (start && start.gt(N(producer.amount))) {
         producer.amount = NR(start);
       }
     }

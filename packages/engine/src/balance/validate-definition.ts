@@ -484,10 +484,11 @@ export function validateGameDefinition(raw: unknown, ctx: DefinitionValidationCo
 /**
  * Validates an untyped parsed JSON into a `GameDefinition`: throws, listing
  * every finding of `validateGameDefinition`, when the definition is not valid
- * and evaluable. Returns the input itself (not a copy) when it is.
+ * and evaluable. Returns the input itself (not a copy) when it is. `ctx` is
+ * passed on unchanged: a game with its own growth methods registers them there.
  */
-export function parseGameDefinition(raw: unknown): GameDefinition {
-  const issues = validateGameDefinition(raw);
+export function parseGameDefinition(raw: unknown, ctx: DefinitionValidationContext = {}): GameDefinition {
+  const issues = validateGameDefinition(raw, ctx);
   if (issues.length > 0) {
     const lines = issues.map((issue) => (issue.path.length > 0 ? `${issue.message} (${issue.path.join(".")})` : issue.message));
     throw new Error(`Invalid game definition: ${lines.join("; ")}`);
