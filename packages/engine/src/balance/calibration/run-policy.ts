@@ -52,12 +52,19 @@ export interface RunPolicyOptions {
   /** The player's presence; absent = a visit every `visitMs`, as before. */
   presence?: PresenceProfile;
   automation?: RunAutomation;
+  /**
+   * While true, the prestige waits: in this visit the moves come first (a choice
+   * of the game, e.g. a move worth more than the prestige right now). Asked at
+   * every decision; the held visit skips the prestige, resets the `bestRate` plan
+   * and lets the moves that lower the pending gain through.
+   */
+  holdPrestige?: (state: GameState) => boolean;
 }
 
 /**
  * The generic run played during a calibration. Each visit, in order:
  * (1) buys the shop items of `order` while the next one can be paid, stopping
- * at the first one that cannot; (2) prestiges when the rule says so, and then
+ * at the first one that cannot; (2) prestiges when the rule says so (unless `holdPrestige` holds it), and then
  * returns only the purchases and the prestige; (3) uses the ready moves in
  * `movePriority` and, if any is ready, ends the visit (the harness decides again
  * right after the moves); (4) buys the producers of `producerCurrency` at buy max,
@@ -116,10 +123,10 @@ export function createRunPolicy(opts: RunPolicyOptions, order: ShopOrder, moves:
   };
 
   /** While `estimateRate` waits for the next unit, a move that would lower the pending gain (a reset) is skipped. */
-  const lowersGain = (state: GameState, engine: Engine, code: string): boolean => {
+  const lowersGain = (state: GameState, engine: Engine, code: string, held: boolean): boolean => {
     const prestige = state.prestiges.find((p) => p.code === opts.prestigeCode);
     const move = moveByCode.get(code);
-    if (!waiting || !prestige || !move) return false;
+    if (held || !waiting || !prestige || !move) return false;
     const copy = structuredClone(state);
     if (!move.apply(copy, engine)) return false;
     const copyPrestige = copy.prestiges.find((p) => p.code === prestige.code)!;
@@ -158,12 +165,12 @@ export function createRunPolicy(opts: RunPolicyOptions, order: ShopOrder, moves:
   };
 
   /** (3) Queues the ready moves of `movePriority` (only those in `allowed`, when given); true if any. */
-  const queueMoves = (state: GameState, engine: BotContext["engine"], intents: BotIntent[], allowed?: ReadonlySet<string>): boolean => {
+  const queueMoves = (state: GameState, engine: BotContext["engine"], intents: BotIntent[], allowed?: ReadonlySet<string>, held = false): boolean => {
     let queued = false;
     for (const code of opts.movePriority) {
       if (allowed && !allowed.has(code)) continue;
       const move = moveByCode.get(code);
-      if (move?.ready(state, engine) && !lowersGain(state, engine, code)) {
+      if (move?.ready(state, engine) && !lowersGain(state, engine, code, held)) {
         intents.push({ kind: "move", code });
         queued = true;
       }
@@ -248,9 +255,11 @@ export function createRunPolicy(opts: RunPolicyOptions, order: ShopOrder, moves:
         intents.push({ kind: "buyUpgrade", code: item.code });
       }
 
-      // (2) Prestige.
+      // (2) Prestige, unless the game holds it for this visit.
+      const held = opts.holdPrestige?.(state) ?? false;
+      if (held) plan = null;
       const prestige = state.prestiges.find((p) => p.code === opts.prestigeCode);
-      if (prestige) {
+      if (prestige && !held) {
         const rule = opts.prestigeRule;
         const fires =
           rule.kind === "rate"
@@ -270,7 +279,7 @@ export function createRunPolicy(opts: RunPolicyOptions, order: ShopOrder, moves:
       }
 
       // (3) + (4)
-      const movesQueued = queueMoves(state, engine, intents);
+      const movesQueued = queueMoves(state, engine, intents, undefined, held);
       if (!movesQueued) buyProducers(state, engine, intents, poolBudget, budget);
 
       return intents;

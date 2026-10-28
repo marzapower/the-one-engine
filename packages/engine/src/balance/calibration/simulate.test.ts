@@ -585,6 +585,48 @@ describe("prestige rules that wait for a better rate", () => {
     expect(plain.decide({ ...at(1), tSimMs: HOUR }).some((i) => i.kind === "move")).toBe(true);
   });
 
+  describe("holdPrestige", () => {
+    const ready: GameMove = { code: "ready", ready: () => true, apply: () => true };
+    const target = { ...POLICY, prestigeRule: { kind: "target" as const, minGain: 1 }, movePriority: ["ready"] };
+
+    it("held: no prestige, and the ready move is played", () => {
+      const bot = createRunPolicy({ ...target, holdPrestige: () => true }, [], [ready]);
+      const intents = bot.decide({ ...at(2), tSimMs: HOUR });
+      expect(fires(intents)).toBe(false);
+      expect(intents).toEqual([{ kind: "move", code: "ready" }]);
+    });
+
+    it("not held: the prestige fires as without the option", () => {
+      const bot = createRunPolicy({ ...target, holdPrestige: () => false }, [], [ready]);
+      expect(fires(bot.decide({ ...at(2), tSimMs: HOUR }))).toBe(true);
+      expect(fires(createRunPolicy(target, [], [ready]).decide({ ...at(2), tSimMs: HOUR }))).toBe(true);
+    });
+
+    it("held: a move that lowers the pending gain passes while estimateRate waits, and only for that call", () => {
+      const wipe: GameMove = {
+        code: "wipe",
+        ready: () => true,
+        apply: (state) => {
+          state.currencies.find((c) => c.code === "primary")!.amount = NR(0);
+          return true;
+        },
+      };
+      let held = false;
+      const bot = createRunPolicy({ ...POLICY, prestigeRule: { kind: "estimateRate" }, movePriority: ["wipe"], holdPrestige: () => held }, [], [wipe]);
+      const plays = (x: number, t: number) => bot.decide({ ...at(x), tSimMs: t }).some((i) => i.kind === "move");
+      // A visit with the gain growing: the policy now waits for the next unit and skips the wipe.
+      expect(plays(1, HOUR)).toBe(false);
+      expect(plays(1.5, 1.5 * HOUR)).toBe(false);
+      // The held visit: the wipe passes, and there is no prestige.
+      held = true;
+      const intents = bot.decide({ ...at(1.6), tSimMs: 2 * HOUR });
+      expect(intents).toEqual([{ kind: "move", code: "wipe" }]);
+      // Next visit not held: the permission is gone, the wipe is skipped again.
+      held = false;
+      expect(plays(1.7, 2.5 * HOUR)).toBe(false);
+    });
+  });
+
   it("simulateOrder plays bestRate and estimateRate to the end", () => {
     for (const prestigeRule of [{ kind: "bestRate" as const }, { kind: "estimateRate" as const }]) {
       const result = simulateOrder(input({ job: job("w", MULT_THEN_GAIN), policy: { ...POLICY, prestigeRule } }));
