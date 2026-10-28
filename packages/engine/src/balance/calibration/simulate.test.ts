@@ -13,7 +13,7 @@ import { runBalanceSim } from "../harness";
 import { MetricsCollector } from "../metrics";
 import type { GameMove } from "../types";
 import { type PresenceProfile, canTapAt, isOpen, isVisit } from "./presence";
-import { type RunPolicyOptions, createRunPolicy } from "./run-policy";
+import { type RunLookahead, type RunPolicyOptions, createRunPolicy } from "./run-policy";
 import { type SimulateOrderInput, simulateOrder } from "./simulate";
 import type { OrderJob, ShopOrder } from "./types";
 
@@ -367,6 +367,15 @@ describe("simulateOrder with a presence", () => {
     return { report, amounts, state };
   }
 
+  it("advances closed minutes at a coarse tick with the same result for linear production", () => {
+    const run = (closedTickMs: number) =>
+      simulateOrder(input({ job: job("c", MULT_THEN_GAIN), policy: withPresence({ prestigeRule: { kind: "target", minGain: 3 } }), horizonMs: 3 * 60 * MIN, closedTickMs }));
+    const exact = run(TICK_MS);
+    const coarse = run(MIN);
+    expect(coarse.runs.map((r) => [r.endMs, r.gain])).toEqual(exact.runs.map((r) => [r.endMs, r.gain]));
+    expect(coarse.purchases).toEqual(exact.purchases);
+  });
+
   it("validates the profile and ignores visitMs", () => {
     const bad: PresenceProfile = { periodMs: 60 * MIN, sessions: [{ startMs: 0, durationMs: 10 * MIN, visits: [] }] };
     expect(() => simulateOrder(input({ job: job("v", MULT_THEN_GAIN), policy: withPresence({ presence: bad }) }))).toThrow(/visits/);
@@ -503,5 +512,85 @@ describe("createRunPolicy with a presence", () => {
       { kind: "move", code: "reset" },
       { kind: "move", code: "other" },
     ]);
+  });
+});
+
+describe("prestige rules that wait for a better rate", () => {
+  const HOUR = 3_600_000;
+  /** A fresh game whose prestige pays `gain` now (0.05 per primary). */
+  const at = (gain: number) => {
+    const sim = makeSim();
+    sim.state.currencies.find((c) => c.code === "primary")!.amount = NR(gain * 20);
+    return sim;
+  };
+  const fires = (intents: { kind: string }[]) => intents.some((i) => i.kind === "prestige");
+
+  it("bestRate waits when the look-ahead shows a better gain per hour, and fires when it is reached", () => {
+    const lookahead: RunLookahead = (state, t0, _durationMs, onVisit) => {
+      const copy = structuredClone(state);
+      copy.currencies.find((c) => c.code === "primary")!.amount = NR(40);
+      onVisit(copy, at(2).engine, t0 + HOUR / 2);
+    };
+    const bot = createRunPolicy({ ...POLICY, prestigeRule: { kind: "bestRate" } }, [], [], lookahead);
+    const now = at(1);
+    // 1 after 3 h (1/3 per hour) against 2 after 3.5 h (0.57 per hour): wait.
+    expect(fires(bot.decide({ ...now, tSimMs: 3 * HOUR }))).toBe(false);
+    const later = at(2);
+    expect(fires(bot.decide({ ...later, tSimMs: 3.5 * HOUR }))).toBe(true);
+  });
+
+  it("bestRate fires at once when the next step comes too late", () => {
+    const lookahead: RunLookahead = (state, t0, _durationMs, onVisit) => {
+      const copy = structuredClone(state);
+      copy.currencies.find((c) => c.code === "primary")!.amount = NR(40);
+      onVisit(copy, at(2).engine, t0 + 4 * HOUR);
+    };
+    const bot = createRunPolicy({ ...POLICY, prestigeRule: { kind: "bestRate" } }, [], [], lookahead);
+    // 1 after 3 h (0.33 per hour) against 2 after 7 h (0.29 per hour): fire now.
+    expect(fires(bot.decide({ ...at(1), tSimMs: 3 * HOUR }))).toBe(true);
+  });
+
+  it("bestRate needs a look-ahead", () => {
+    expect(() => createRunPolicy({ ...POLICY, prestigeRule: { kind: "bestRate" } }, [], [])).toThrow(/lookahead/);
+  });
+
+  it("estimateRate waits while the next unit, at the speed it sees, raises the gain per hour", () => {
+    const bot = createRunPolicy({ ...POLICY, prestigeRule: { kind: "estimateRate" } }, [], []);
+    // First look at 1.0 after 3 h: no speed yet, look again.
+    expect(fires(bot.decide({ ...at(1), tSimMs: 3 * HOUR }))).toBe(false);
+    // 1.5 at 3.5 h: +1 per hour, 2 at 4 h is worth 0.5 per hour against 0.29 now: wait.
+    expect(fires(bot.decide({ ...at(1.5), tSimMs: 3.5 * HOUR }))).toBe(false);
+    // 1.55 at 4 h: +0.1 per hour, 2 only at 8.5 h (0.24 per hour) against 0.25 now: fire.
+    expect(fires(bot.decide({ ...at(1.55), tSimMs: 4 * HOUR }))).toBe(true);
+  });
+
+  it("estimateRate fires when the pending gain stands still", () => {
+    const bot = createRunPolicy({ ...POLICY, prestigeRule: { kind: "estimateRate" } }, [], []);
+    expect(fires(bot.decide({ ...at(1.2), tSimMs: 2 * HOUR }))).toBe(false);
+    expect(fires(bot.decide({ ...at(1.2), tSimMs: 2.5 * HOUR }))).toBe(true);
+  });
+
+  it("estimateRate skips a move that would wipe the pending gain while it waits", () => {
+    const wipe: GameMove = {
+      code: "wipe",
+      ready: () => true,
+      apply: (state) => {
+        state.currencies.find((c) => c.code === "primary")!.amount = NR(0);
+        return true;
+      },
+    };
+    const waiting = createRunPolicy({ ...POLICY, prestigeRule: { kind: "estimateRate" }, movePriority: ["wipe"] }, [], [wipe]);
+    expect(waiting.decide({ ...at(1), tSimMs: HOUR }).some((i) => i.kind === "move")).toBe(false);
+    const plain = createRunPolicy({ ...POLICY, prestigeRule: { kind: "target", minGain: 1e9 }, movePriority: ["wipe"] }, [], [wipe]);
+    expect(plain.decide({ ...at(1), tSimMs: HOUR }).some((i) => i.kind === "move")).toBe(true);
+  });
+
+  it("simulateOrder plays bestRate and estimateRate to the end", () => {
+    for (const prestigeRule of [{ kind: "bestRate" as const }, { kind: "estimateRate" as const }]) {
+      const result = simulateOrder(input({ job: job("w", MULT_THEN_GAIN), policy: { ...POLICY, prestigeRule } }));
+      // The simulation ends at the horizon, or earlier once the order is bought and no milestone is left.
+      expect(result.endedAtMs).toBeLessThanOrEqual(result.horizonMs);
+      for (const run of result.runs) expect(run.gain).toBeGreaterThanOrEqual(1);
+    }
   });
 });

@@ -5,7 +5,7 @@ import type { ResolvedClickable } from "../definition";
 import { runBalanceSim } from "../harness";
 import { MetricsCollector } from "../metrics";
 import type { GameMove, SimAction } from "../types";
-import { canTapAt, isVisit, validatePresence } from "./presence";
+import { canTapAt, isOpen, isVisit, validatePresence } from "./presence";
 import { type RunLookahead, type RunPolicyOptions, createRunPolicy } from "./run-policy";
 import type { OrderJob, OrderResult, RunRecord } from "./types";
 
@@ -29,6 +29,14 @@ export interface SimulateOrderInput {
    * every sample and after every action: it shows where a run spends its time.
    */
   runMarks?: (state: GameState) => string[];
+  /**
+   * Engine tick while the page is closed (a presence only), like the game's
+   * offline recovery: default 60 000 ms, one per sampling minute (production
+   * only, no gestures happen there). Pass `tickLengthMs` for the exact run.
+   */
+  closedTickMs?: number;
+  /** Engine tick of the `bestRate` look-ahead copy (default 10 000 ms): it only needs the gain at each visit. */
+  lookaheadTickMs?: number;
 }
 
 /**
@@ -143,6 +151,10 @@ export function simulateOrder(input: SimulateOrderInput): OrderResult {
   const moves = input.moves(engine);
   const decisionIntervalMs = presence ? SAMPLE_INTERVAL_MS : policy.visitMs;
   const tickLengthMs = input.tickLengthMs;
+  const closedTickMs = input.closedTickMs ?? SAMPLE_INTERVAL_MS;
+  const lookaheadTickMs = input.lookaheadTickMs ?? 10_000;
+  /** Closed minutes (the sessions are minute-aligned) advance at `closedTickMs`. */
+  const tickLengthAt = (t: number): number | undefined => (presence && !isOpen(presence, t) ? closedTickMs : undefined);
   /** `bestRate`: the same run on a copy, with its own engine, never prestiging; visits reported in absolute time. */
   const lookahead: RunLookahead = (from, t0, durationMs, onVisit) => {
     const fork = input.makeSim().engine;
@@ -161,6 +173,7 @@ export function simulateOrder(input: SimulateOrderInput): OrderResult {
       },
       clickable: input.clickable,
       ...(presence && { canTap: (t: number) => canTapAt(presence, t0 + t) }),
+      tickLengthAt: (t: number) => tickLengthAt(t0 + t) ?? lookaheadTickMs,
       moves,
       params: { durationMs, tickLengthMs, decisionIntervalMs, sampleIntervalMs: SAMPLE_INTERVAL_MS },
       redecideAfterMoves: true,
@@ -175,7 +188,7 @@ export function simulateOrder(input: SimulateOrderInput): OrderResult {
     collector,
     clickable: input.clickable,
     // The player taps on a visit and in the minute after it (the harness taps before deciding).
-    ...(presence && { canTap: (t: number) => canTapAt(presence, t) }),
+    ...(presence && { canTap: (t: number) => canTapAt(presence, t), tickLengthAt }),
     moves,
     params: { durationMs: horizonMs, tickLengthMs, decisionIntervalMs, sampleIntervalMs: SAMPLE_INTERVAL_MS },
     redecideAfterMoves: true,

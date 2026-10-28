@@ -44,6 +44,12 @@ export interface RunBalanceSimOptions {
    * wipes the currency), and the player keeps playing right after it.
    */
   redecideAfterMoves?: boolean;
+  /**
+   * Engine tick length for the chunk starting at `tSimMs`, when it should
+   * differ from the engine's own: the chunk is advanced with `simulateOffline`
+   * at that tick, as the game recovers a closed page. Undefined = the engine's tick.
+   */
+  tickLengthAt?: (tSimMs: number) => number | undefined;
 }
 
 /**
@@ -56,7 +62,7 @@ export function runBalanceSim(opts: RunBalanceSimOptions): BalanceReport {
   const params: HarnessParams = { ...DEFAULT_HARNESS_PARAMS, ...opts.params };
   const engine = opts.engine ?? new Engine(params.tickLengthMs, { time: new MockTimeProvider(params.tickLengthMs), logger: silentLogger });
   const collector = opts.collector ?? new MetricsCollector(engine);
-  const { state, bot, clickable, canTap, moves, shouldStop, redecideAfterMoves } = opts;
+  const { state, bot, clickable, canTap, moves, shouldStop, redecideAfterMoves, tickLengthAt } = opts;
 
   let droppedIntents = 0;
   let tSimMs = 0;
@@ -65,7 +71,9 @@ export function runBalanceSim(opts: RunBalanceSimOptions): BalanceReport {
 
   while (tSimMs < params.durationMs) {
     const chunk = Math.min(params.sampleIntervalMs, params.durationMs - tSimMs);
-    engine.advance(state, chunk);
+    const coarse = tickLengthAt?.(tSimMs);
+    if (coarse !== undefined) engine.simulateOffline(state, chunk, { tickLengthMs: coarse });
+    else engine.advance(state, chunk);
     tSimMs += chunk;
 
     if (clickable && (!canTap || canTap(tSimMs))) {

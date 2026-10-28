@@ -1,5 +1,5 @@
 import type { Engine } from "../../core/engine";
-import { rateRulePrestige } from "../../core/prestige-run";
+import { continuousPrestigeGain, rateRulePrestige } from "../../core/prestige-run";
 import { isUnlocked, upgradePurchaseBlock } from "../../core/purchase";
 import { type Decimal, N } from "../../nums";
 import type { GameState } from "../../state";
@@ -10,7 +10,8 @@ import type { ShopOrder } from "./types";
 /**
  * When the policy prestiges: `rate` follows the engine's rate rule, `target`
  * fires at a delivered gain, `bestRate` looks ahead and fires at the visit with
- * the most delivered gain per hour of run (see `createRunPolicy`).
+ * the most delivered gain per hour of run, `estimateRate` decides like a player
+ * who only knows this run and the previous ones (see `createRunPolicy`).
  */
 export type CalibrationPrestigeRule =
   | { kind: "rate"; minRunMs?: number; drop?: number }
@@ -21,7 +22,8 @@ export type CalibrationPrestigeRule =
       horizonFactor?: number;
       /** Least time to look ahead, in ms (default 3 600 000). */
       minHorizonMs?: number;
-    };
+    }
+  | { kind: "estimateRate" };
 
 /**
  * Plays the run on from a copy of `state` at `tSimMs`, the same way but
@@ -77,6 +79,52 @@ export function createRunPolicy(opts: RunPolicyOptions, order: ShopOrder, moves:
   /** Start of the current run, and the gain `bestRate` waits for in it (null: not planned yet). */
   let runStartMs = 0;
   let plan: { gain: number; atMs: number } | null = null;
+  /** `estimateRate`: the pending gain (no floor) at the last visit of this run, and whether the policy is waiting for the next unit. */
+  let lastSeen: { tMs: number; gain: number } | null = null;
+  let waiting = false;
+
+  /**
+   * `estimateRate`, what a player sees: the pending gain now (with its fraction)
+   * and how fast it grew since the last visit. With E the time into the run and
+   * g the whole gain now, the next unit comes in Δ = (g + 1 − pending) / speed;
+   * waiting pays when (g + 1) / (E + Δ) > g / E. Without a speed yet (first
+   * look, or the gain fell since) it waits one visit; a gain that does not grow
+   * fires.
+   */
+  const estimateFires = (state: GameState, engine: Engine, prestige: GameState["prestiges"][number], tSimMs: number): boolean => {
+    const gain = Math.floor(engine.prestigeGain(state, prestige).toNumber());
+    const pending = continuousPrestigeGain(engine, state, prestige).toNumber();
+    const before = lastSeen;
+    lastSeen = { tMs: tSimMs, gain: pending };
+    waiting = false;
+    if (!(gain >= 1)) return false;
+    if (!before || before.gain >= pending) {
+      // No speed to read: look once more at the next visit, unless the gain stands still.
+      if (before && before.gain === pending) return true;
+      waiting = true;
+      return false;
+    }
+    const speed = (pending - before.gain) / (tSimMs - before.tMs);
+    const runMs = Math.max(tSimMs - runStartMs, 1);
+    const next = Math.floor(pending) + 1;
+    const wait = (next - pending) / speed;
+    if (next / (runMs + wait) > gain / runMs) {
+      waiting = true;
+      return false;
+    }
+    return true;
+  };
+
+  /** While `estimateRate` waits for the next unit, a move that would lower the pending gain (a reset) is skipped. */
+  const lowersGain = (state: GameState, engine: Engine, code: string): boolean => {
+    const prestige = state.prestiges.find((p) => p.code === opts.prestigeCode);
+    const move = moveByCode.get(code);
+    if (!waiting || !prestige || !move) return false;
+    const copy = structuredClone(state);
+    if (!move.apply(copy, engine)) return false;
+    const copyPrestige = copy.prestiges.find((p) => p.code === prestige.code)!;
+    return continuousPrestigeGain(engine, copy, copyPrestige).lt(continuousPrestigeGain(engine, state, prestige));
+  };
 
   /**
    * `bestRate`: the first time the prestige pays, plays the run on and picks the
@@ -115,7 +163,7 @@ export function createRunPolicy(opts: RunPolicyOptions, order: ShopOrder, moves:
     for (const code of opts.movePriority) {
       if (allowed && !allowed.has(code)) continue;
       const move = moveByCode.get(code);
-      if (move?.ready(state, engine)) {
+      if (move?.ready(state, engine) && !lowersGain(state, engine, code)) {
         intents.push({ kind: "move", code });
         queued = true;
       }
@@ -209,10 +257,14 @@ export function createRunPolicy(opts: RunPolicyOptions, order: ShopOrder, moves:
             ? rateRulePrestige(engine, state, prestige, { minRunMs: rule.minRunMs, drop: rule.drop })
             : rule.kind === "target"
               ? engine.prestigeGain(state, prestige).gte(rule.minGain)
-              : bestRateFires(rule, state, engine, prestige, tSimMs);
+              : rule.kind === "bestRate"
+                ? bestRateFires(rule, state, engine, prestige, tSimMs)
+                : estimateFires(state, engine, prestige, tSimMs);
         if (fires) {
           runStartMs = tSimMs;
           plan = null;
+          lastSeen = null;
+          waiting = false;
           return [...intents, { kind: "prestige", code: prestige.code }];
         }
       }
