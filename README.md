@@ -227,6 +227,17 @@ density, purchase rotation, prestige cycles, saturation onset), and a
 `GameDefinition` describes an entire game as JSON so two versions can be
 compared on the same build.
 
+`runCalibration` checks a prestige shop: it plays many purchase orders of the
+same upgrades (cheapest first, each upgrade moved first or last, random orders,
+a beam search for the best and the worst), compares how fast each order grows
+the prestige currency per hour, and flags an order whose curve keeps pulling
+away from the median, a best order far ahead at a milestone, and runs that get
+longer. Your game plugs in its own moves (`GameMove`) and runs the orders
+wherever it likes, in parallel processes too; `renderCalibrationHtml` writes a
+self-contained report. The player can be a human profile (sessions, visits,
+closed-page time) with automations as bot rules; times are then hours of active
+play, and the report adds a table with the first purchase of each upgrade.
+
 `the-one-engine/testing` ships a fake clock, a state adapter that records every
 mutation, and a fluent `ScenarioRunner`:
 

@@ -20,8 +20,22 @@ import type { GameState } from "../state";
 // Bot layer
 // ---------------------------------------------------------------------------
 
-/** A purchase/prestige intent decided by a policy. The harness validates and applies it. */
-export type BotIntent = { kind: "buyProducer"; code: string; amount: number } | { kind: "buyUpgrade"; code: string } | { kind: "prestige"; code: string };
+/**
+ * A game-specific action a policy can request by `code` (e.g. a manual
+ * mechanic that is not a purchase). Registered on the harness via
+ * `RunBalanceSimOptions.moves`; the harness is the only place that runs it.
+ */
+export interface GameMove {
+  code: string;
+  /** Whether the move can be used right now. Must not mutate the state. */
+  ready(state: GameState, engine: Engine): boolean;
+  /** Performs the move; returns false when it had no effect (the intent is dropped). */
+  apply(state: GameState, engine: Engine): boolean;
+}
+
+/** A purchase/prestige/move intent decided by a policy. The harness validates and applies it. */
+export type BotIntent =
+  { kind: "buyProducer"; code: string; amount: number } | { kind: "buyUpgrade"; code: string } | { kind: "prestige"; code: string } | { kind: "move"; code: string };
 
 /**
  * An applied intent, enriched by the harness with cost/gain and sim time.
@@ -31,7 +45,8 @@ export type BotIntent = { kind: "buyProducer"; code: string; amount: number } | 
 export type SimAction =
   | { kind: "buyProducer"; code: string; amount: number; cost: Numerus; costs?: CostLine[]; tSimMs: number }
   | { kind: "buyUpgrade"; code: string; cost: Numerus; costs?: CostLine[]; tSimMs: number }
-  | { kind: "prestige"; code: string; gain: Numerus; tSimMs: number };
+  | { kind: "prestige"; code: string; gain: Numerus; tSimMs: number }
+  | { kind: "move"; code: string; tSimMs: number };
 
 export interface BotContext {
   state: GameState;

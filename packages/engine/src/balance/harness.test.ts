@@ -12,7 +12,7 @@ import type { ResolvedClickable } from "./definition";
 import { GreedyBot } from "./greedy-bot";
 import { runBalanceSim } from "./harness";
 import { MetricsCollector } from "./metrics";
-import type { SimAction } from "./types";
+import type { BotPolicy, GameMove, SimAction } from "./types";
 
 const linearScaling = (base: number, coeff: number) => ({
   base: NR(base),
@@ -201,6 +201,41 @@ describe("runBalanceSim with clickable", () => {
     });
 
     expect(report.clicks).toEqual({ count: 0, lastMs: null });
+  });
+});
+
+describe("runBalanceSim canTap", () => {
+  const clickable: ResolvedClickable = { currencyCode: "primary", gain: 1, cooldownMs: 1000 };
+  const params = { durationMs: 120_000, sampleIntervalMs: 1_000, decisionIntervalMs: 1_000, tickLengthMs: 250 };
+
+  it("never taps when canTap is false", () => {
+    const report = runBalanceSim({ state: stuckState({ primaryAmount: 15 }), bot: new GreedyBot(), params, clickable, canTap: () => false });
+    expect(report.clicks).toEqual({ count: 0, lastMs: null });
+    expect(report.actionsCount.p1).toBeUndefined();
+  });
+
+  it("taps as without it when canTap is true", () => {
+    const plain = runBalanceSim({ state: stuckState({ primaryAmount: 15 }), bot: new GreedyBot(), params, clickable });
+    const allowed = runBalanceSim({ state: stuckState({ primaryAmount: 15 }), bot: new GreedyBot(), params, clickable, canTap: () => true });
+    expect(allowed.clicks).toEqual(plain.clicks);
+    expect(allowed.actions).toEqual(plain.actions);
+  });
+
+  it("taps only in the chunks it allows", () => {
+    const seen: number[] = [];
+    const report = runBalanceSim({
+      state: stuckState({ primaryAmount: 0 }),
+      bot: new GreedyBot(),
+      params: { ...params, durationMs: 10_000 },
+      clickable,
+      canTap: (t) => {
+        seen.push(t);
+        return t > 5_000;
+      },
+    });
+    expect(seen).toHaveLength(10);
+    expect(report.clicks.lastMs).toBeGreaterThan(5_000);
+    expect(report.clicks.count).toBeLessThanOrEqual(6);
   });
 });
 
@@ -404,5 +439,94 @@ describe("runBalanceSim — extra costs in actions", () => {
       ["gems", 6],
     ]);
     expect(byCode("uRich").costs?.map((l) => l.currencyCode)).toEqual(["primary", "gems"]);
+  });
+});
+
+describe("runBalanceSim moves and shouldStop", () => {
+  const primaryOf = (state: GameState) => state.currencies.find((c) => c.code === "primary")!;
+
+  it("move intents apply registered moves and are recorded", () => {
+    const state = tinyState();
+    primaryOf(state).amount = NR(10);
+    const double: GameMove = {
+      code: "double",
+      ready: (s) => N(s.currencies.find((c) => c.code === "primary")!.amount).gte(10),
+      apply: (s) => {
+        const c = s.currencies.find((x) => x.code === "primary")!;
+        c.amount = NR(N(c.amount).mul(2));
+        return true;
+      },
+    };
+    const never: GameMove = { code: "never", ready: () => false, apply: () => true };
+    const bot: BotPolicy = {
+      id: "mover",
+      decide: () => [
+        { kind: "move", code: "double" },
+        { kind: "move", code: "ghost" },
+        { kind: "move", code: "never" },
+      ],
+    };
+
+    const report = runBalanceSim({
+      state,
+      bot,
+      moves: [double, never],
+      params: { durationMs: 1000, sampleIntervalMs: 1000, decisionIntervalMs: 1000 },
+    });
+
+    const moves = report.actions.filter((a) => a.kind === "move");
+    expect(moves).toHaveLength(1);
+    expect(moves[0]).toMatchObject({ kind: "move", code: "double" });
+    expect(N(primaryOf(state).amount).toNumber()).toBe(20);
+    expect(report.meta.droppedIntents).toBe(2);
+  });
+
+  it("move intents are dropped when apply returns false or no registry is given", () => {
+    const refuse: GameMove = { code: "refuse", ready: () => true, apply: () => false };
+    const bot: BotPolicy = { id: "mover", decide: () => [{ kind: "move", code: "refuse" }] };
+    const params = { durationMs: 1000, sampleIntervalMs: 1000, decisionIntervalMs: 1000 };
+
+    const refused = runBalanceSim({ state: tinyState(), bot, moves: [refuse], params });
+    const noRegistry = runBalanceSim({ state: tinyState(), bot, params });
+
+    expect(refused.actions).toHaveLength(0);
+    expect(refused.meta.droppedIntents).toBe(1);
+    expect(noRegistry.meta.droppedIntents).toBe(1);
+  });
+
+  it("shouldStop ends the run early", () => {
+    const sampleIntervalMs = 5_000;
+    const report = runBalanceSim({
+      state: tinyState(),
+      bot: new GreedyBot(),
+      shouldStop: (_s, tSimMs) => tSimMs >= 30_000,
+      params: { durationMs: 120_000, sampleIntervalMs, decisionIntervalMs: 5_000 },
+    });
+
+    const last = report.series[report.series.length - 1]!;
+    expect(last.tSimMs).toBeLessThanOrEqual(30_000 + sampleIntervalMs);
+    expect(last.tSimMs).toBeLessThan(120_000);
+  });
+});
+
+describe("runBalanceSim — redecideAfterMoves", () => {
+  it("asks the bot again at the same time after a move, only once, and only when asked", () => {
+    const run = (redecideAfterMoves: boolean) => {
+      const state = tinyState();
+      state.currencies.find((c) => c.code === "primary")!.amount = NR(10);
+      const calls: number[] = [];
+      const bot: BotPolicy = {
+        id: "mover",
+        decide: ({ tSimMs }) => {
+          calls.push(tSimMs);
+          return [{ kind: "move", code: "noop" }];
+        },
+      };
+      const moves: GameMove[] = [{ code: "noop", ready: () => true, apply: () => true }];
+      runBalanceSim({ state, bot, moves, redecideAfterMoves, params: { durationMs: 2_000, tickLengthMs: 1_000, decisionIntervalMs: 1_000, sampleIntervalMs: 1_000 } });
+      return calls;
+    };
+    expect(run(true)).toEqual([1_000, 1_000, 2_000, 2_000]);
+    expect(run(false)).toEqual([1_000, 2_000]);
   });
 });

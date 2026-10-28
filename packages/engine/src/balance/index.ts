@@ -1,4 +1,5 @@
 export * from "./bot-definition";
+export * from "./calibration";
 export * from "./definition";
 export * from "./greedy-bot";
 export * from "./harness";

@@ -8,7 +8,7 @@ import type { ResolvedClickable } from "./definition";
 import { MetricsCollector } from "./metrics";
 import { nextUnitCost } from "./queries";
 import { DEFAULT_HARNESS_PARAMS } from "./types";
-import type { BalanceReport, BotIntent, BotPolicy, HarnessParams, SimAction } from "./types";
+import type { BalanceReport, BotIntent, BotPolicy, GameMove, HarnessParams, SimAction } from "./types";
 
 export interface RunBalanceSimOptions {
   state: GameState;
@@ -25,6 +25,25 @@ export interface RunBalanceSimOptions {
    * Incremental's `gameSlice` tap.
    */
   clickable?: ResolvedClickable;
+  /**
+   * When given and false for the chunk ending at `tSimMs`, no taps happen in
+   * that chunk (the tap clock is left untouched). Default: taps are always allowed.
+   */
+  canTap?: (tSimMs: number) => boolean;
+  /** Registry of game-specific moves a bot can request with `{ kind: "move", code }`. */
+  moves?: GameMove[];
+  /**
+   * Evaluated after every decision point (including ones that applied
+   * nothing). When true the loop ends and the report closes normally at the
+   * current `tSimMs`.
+   */
+  shouldStop?: (state: GameState, tSimMs: number) => boolean;
+  /**
+   * When a decision point applied at least one move, ask the bot once more at
+   * the same `tSimMs`: a move can reset what the bot priced (a micro-prestige
+   * wipes the currency), and the player keeps playing right after it.
+   */
+  redecideAfterMoves?: boolean;
 }
 
 /**
@@ -37,7 +56,7 @@ export function runBalanceSim(opts: RunBalanceSimOptions): BalanceReport {
   const params: HarnessParams = { ...DEFAULT_HARNESS_PARAMS, ...opts.params };
   const engine = opts.engine ?? new Engine(params.tickLengthMs, { time: new MockTimeProvider(params.tickLengthMs), logger: silentLogger });
   const collector = opts.collector ?? new MetricsCollector(engine);
-  const { state, bot, clickable } = opts;
+  const { state, bot, clickable, canTap, moves, shouldStop, redecideAfterMoves } = opts;
 
   let droppedIntents = 0;
   let tSimMs = 0;
@@ -49,27 +68,34 @@ export function runBalanceSim(opts: RunBalanceSimOptions): BalanceReport {
     engine.advance(state, chunk);
     tSimMs += chunk;
 
-    if (clickable) {
+    if (clickable && (!canTap || canTap(tSimMs))) {
       nextTapMs = applyTaps(state, engine, clickable, collector, tSimMs, chunk, nextTapMs);
     }
 
     collector.onSample(state, tSimMs);
 
     if (tSimMs >= nextDecisionMs) {
-      const intents = bot.decide({ state, engine, tSimMs });
-      const applied = intents.slice(0, params.maxActionsPerDecision);
-      droppedIntents += intents.length - applied.length;
+      for (let round = 0; round < (redecideAfterMoves ? 2 : 1); round++) {
+        const intents = bot.decide({ state, engine, tSimMs });
+        const applied = intents.slice(0, params.maxActionsPerDecision);
+        droppedIntents += intents.length - applied.length;
 
-      for (const intent of applied) {
-        const action = applyIntent(state, engine, intent, tSimMs);
-        if (action) {
-          collector.onAction(action, state);
-        } else {
-          droppedIntents++;
+        let movesApplied = 0;
+        for (const intent of applied) {
+          const action = applyIntent(state, engine, intent, tSimMs, moves);
+          if (action) {
+            collector.onAction(action, state);
+            if (action.kind === "move") movesApplied++;
+          } else {
+            droppedIntents++;
+          }
         }
+        if (movesApplied === 0) break;
       }
 
       nextDecisionMs += params.decisionIntervalMs;
+
+      if (shouldStop?.(state, tSimMs)) break;
     }
   }
 
@@ -143,7 +169,7 @@ function applyTaps(state: GameState, engine: Engine, clickable: ResolvedClickabl
  * invalid intents are silently rejected (return undefined), and the caller
  * counts the drop.
  */
-function applyIntent(state: GameState, engine: Engine, intent: BotIntent, tSimMs: number): SimAction | undefined {
+function applyIntent(state: GameState, engine: Engine, intent: BotIntent, tSimMs: number, moves?: GameMove[]): SimAction | undefined {
   switch (intent.kind) {
     case "buyProducer":
       return applyBuyProducer(state, engine, intent.code, intent.amount, tSimMs);
@@ -151,6 +177,8 @@ function applyIntent(state: GameState, engine: Engine, intent: BotIntent, tSimMs
       return applyBuyUpgrade(state, engine, intent.code, tSimMs);
     case "prestige":
       return applyPrestige(state, engine, intent.code, tSimMs);
+    case "move":
+      return applyMove(state, engine, intent.code, tSimMs, moves);
   }
 }
 
@@ -189,4 +217,12 @@ function applyPrestige(state: GameState, engine: Engine, code: string, tSimMs: n
   if (!performed) return undefined;
 
   return { kind: "prestige", code, gain: NR(gain), tSimMs };
+}
+
+function applyMove(state: GameState, engine: Engine, code: string, tSimMs: number, moves?: GameMove[]): SimAction | undefined {
+  const move = moves?.find((m) => m.code === code);
+  if (!move || !move.ready(state, engine)) return undefined;
+  if (!move.apply(state, engine)) return undefined;
+
+  return { kind: "move", code, tSimMs };
 }
