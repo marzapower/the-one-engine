@@ -2,8 +2,9 @@ import { describe, expect, it } from "vitest";
 
 import type { Currency, GrowthFunction, Producer, Upgrade } from "../models/base";
 import { ScaleOn, ScalingMethod } from "../models/base";
-import { N, NR } from "../nums";
+import { N, NR, type Numerus } from "../nums";
 import { type GameState, createInitialState } from "../state";
+import { MockStateAdapter } from "../testing/MockStateAdapter";
 import { Engine } from "./engine";
 import { buyProducer, buyUpgrade, costShortfalls, findCostPool, isUnlocked, producerPurchaseBlock, upgradePurchaseBlock } from "./purchase";
 
@@ -351,5 +352,48 @@ describe("extra costs", () => {
     expect(N(engine.maxBuyableAcrossPools(state, state.producers[0]!)).toNumber()).toBe(2);
     state.currencies.pop();
     expect(N(engine.maxBuyableAcrossPools(state, state.producers[0]!)).toNumber()).toBe(0);
+  });
+});
+
+describe("purchases through the state adapter", () => {
+  const fieldWrites = (adapter: MockStateAdapter) =>
+    adapter
+      .getMutations()
+      .filter((m) => m.type === "setField")
+      .map((m) => `${(m.target as { code: string }).code}.${m.field}=${N(m.value as Numerus).toNumber()}`);
+
+  it("a producer purchase reports the payment, bought and amount to onAfterMutation", () => {
+    const adapter = new MockStateAdapter();
+    const engine = new Engine(undefined, { state: adapter });
+    const state = stateOf({ currencies: [currency("one", 100)], producers: [producer("p")] });
+    adapter.clearMutations();
+
+    expect(buyProducer(engine, state, "p", 3)).toBe(true);
+    expect(fieldWrites(adapter)).toEqual(["one.amount=70", "p.bought=3", "p.amount=3"]);
+  });
+
+  it("an upgrade purchase with a grant reports every write, the granted stock included", () => {
+    const adapter = new MockStateAdapter();
+    const engine = new Engine(undefined, { state: adapter });
+    const grant = { stage: 0 as const, target: { kind: "producer" as const, code: "e1", path: "resetsTo" }, type: "add", func: lin(0, 10) };
+    const state = stateOf({
+      currencies: [currency("one", 1000)],
+      producers: [producer("e1", { resetsTo: NR(0) })],
+      upgrades: [upgrade("sev", { grantOnPurchase: true, effects: [grant], scaling: lin(1) })],
+    });
+    adapter.clearMutations();
+
+    expect(buyUpgrade(engine, state, "sev")).toBe(true);
+    expect(fieldWrites(adapter)).toEqual(["one.amount=999", "sev.bought=1", "sev.amount=1", "e1.amount=10"]);
+  });
+
+  it("a failed purchase writes nothing", () => {
+    const adapter = new MockStateAdapter();
+    const engine = new Engine(undefined, { state: adapter });
+    const state = stateOf({ currencies: [currency("one", 5)], producers: [producer("p")] });
+    adapter.clearMutations();
+
+    expect(buyProducer(engine, state, "p", 1)).toBe(false);
+    expect(adapter.getMutations()).toEqual([]);
   });
 });

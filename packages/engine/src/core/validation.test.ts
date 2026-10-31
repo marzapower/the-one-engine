@@ -264,6 +264,35 @@ describe("validateBootstrap", () => {
       expect(result.warnings.some((w) => w.includes("coeff is 1"))).toBe(true);
     });
 
+    it.each([
+      [2, true],
+      [1, false],
+    ] as const)("warns about a persecDelta effect at stage %i only when it runs after growth (%s)", (stage, warns) => {
+      state.currencies = [{ code: "one", name: "One", amount: NR(0) }];
+      state.upgrades = [
+        {
+          code: "u1",
+          name: "Upgrade 1",
+          amount: NR(0),
+          bought: NR(1),
+          currencyCode: "one",
+          scaling: { base: NR(10), coeff: NR(2), func: ScalingMethod.Geometric, scaleOn: ScaleOn.self },
+          effects: [
+            {
+              stage,
+              target: { kind: "currency", code: "one", path: "persecDelta" },
+              type: "add",
+              func: { base: NR(1), coeff: NR(1), func: ScalingMethod.Linear, scaleOn: ScaleOn.self },
+            },
+          ],
+        },
+      ];
+
+      const result = validateBootstrap(state, services);
+      expect(result.errors).toEqual([]);
+      expect(result.warnings.some((w) => w.includes("runs after growth"))).toBe(warns);
+    });
+
     it("does not warn about coeff 1 for linear", () => {
       state.producers = [
         {

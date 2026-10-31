@@ -431,7 +431,7 @@ function checkRules(def: GameDefinition, ctx: DefinitionValidationContext): Defi
 
   // --- the state walker shared with validateBootstrap ----------------------
   for (const found of walkState(state, { registry, growths, effectTypes }, { emptyReferencesAreUnknown: true })) {
-    if (found.severity === "warning" || found.code === "suspiciousCoeff") continue;
+    if (found.severity === "warning" || found.code === "suspiciousCoeff" || found.code === "lateTransientEffect") continue;
     add(found.code, found.path, found.message, found.range);
   }
 

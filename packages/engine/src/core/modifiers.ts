@@ -13,8 +13,8 @@ import { prestigeDrive } from "./prestige-gain";
  * (stages "Upgrades(0)"/"Upgrades(1)"/"Upgrades(2)"). An effect that writes
  * its result back to a persistent path would compound — the same `mult`/`add`
  * effect re-applied on top of the already-modified value, tick after tick.
- * `persecDelta` targets never had this problem: the "Produce" stage zeroes
- * them out every tick before anything re-adds to them.
+ * `persecDelta` targets never had this problem: the tick zeroes them out
+ * before its first stage, before anything re-adds to them.
  *
  * Effects on persistent paths are therefore never written to state. They are
  * collected here into a per-tick map keyed by the resolved target object, and
@@ -29,8 +29,8 @@ export interface Modifier {
 
 /**
  * An effect target path is "transient" iff its last segment is
- * `persecDelta` — the one channel the "Produce" stage already zeroes every
- * tick, giving it "derived value, recomputed each tick" semantics for free.
+ * `persecDelta` — the one channel the tick already zeroes before its first
+ * stage, giving it "derived value, recomputed each tick" semantics for free.
  * Every other path is "persistent": never written by the effect system,
  * folded at its point of read instead.
  */

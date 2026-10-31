@@ -313,7 +313,7 @@ export class Engine {
 
     const prestigeCurrency = this.services.registry.getByCode(state, "currency", prestige.currencyCode) as Currency | undefined;
     if (prestigeCurrency) {
-      prestigeCurrency.earned = NR(N(prestigeCurrency.earned ?? 0).add(gain));
+      this.services.adapter.setField(state, prestigeCurrency, "earned", NR(N(prestigeCurrency.earned ?? 0).add(gain)));
     }
 
     const keptLevels = new Map<string, Numerus>();
@@ -359,15 +359,15 @@ export class Engine {
     for (const producer of this.services.adapter.getProducers(state)) {
       const start = stock.get(producer.code);
       if (start && start.gt(N(producer.amount))) {
-        producer.amount = NR(start);
+        this.services.adapter.setField(state, producer, "amount", NR(start));
       }
     }
 
     for (const [code, levels] of keptLevels) {
       const upgrade = this.services.registry.getByCode(state, "upgrade", code) as Upgrade | undefined;
       if (!upgrade || N(levels).lte(0)) continue;
-      upgrade.bought = levels;
-      upgrade.amount = levels;
+      this.services.adapter.setField(state, upgrade, "bought", levels);
+      this.services.adapter.setField(state, upgrade, "amount", levels);
     }
   }
 
@@ -507,14 +507,24 @@ export class Engine {
   }
 
   /**
-   * Computes every producer's output for this tick: folds persistent-path
-   * modifiers onto `persec`, applies the saturation drag and efficiency
-   * decay (data-driven — no producer/currency code is ever read for its
-   * meaning), accumulates overflow into its currency and cools it down.
+   * Computes every producer's output from scratch: zeroes every transient
+   * `persecDelta`, then runs `produce`. For callers outside a tick; inside a
+   * tick the zeroing happens before the first stage, so the transient effects
+   * of "Upgrades(0)" survive production.
    */
   public computeProducers(state: GameState, elapsed: number): void {
     this.resetGrowables(state);
+    this.produce(state, elapsed);
+  }
 
+  /**
+   * The "Produce" stage: adds every producer's output for this tick onto the
+   * transient `persecDelta` channels without zeroing them, folding
+   * persistent-path modifiers onto `persec`, applying the saturation drag and
+   * efficiency decay (data-driven — no producer/currency code is ever read for
+   * its meaning), accumulating overflow into its currency and cooling it down.
+   */
+  public produce(state: GameState, elapsed: number): void {
     const mods = collectModifiers(state, this.services);
     const sat = state.rules?.saturation;
     const active = this.saturationActive(state);
@@ -567,7 +577,7 @@ export class Engine {
     if (overflowCurrency) {
       const overflowDelta = NR(overflowTotal.mul(elapsed / 1000));
       this.services.adapter.incrementAmount(state, overflowCurrency, overflowDelta);
-      overflowCurrency.earned = NR(N(overflowCurrency.earned ?? 0).add(N(overflowDelta)));
+      this.services.adapter.setField(state, overflowCurrency, "earned", NR(N(overflowCurrency.earned ?? 0).add(N(overflowDelta))));
 
       if (sat?.cooling) {
         const coolMult = applyModifiers(
@@ -618,6 +628,8 @@ export class Engine {
   }
 
   private singleTick(state: GameState, elapsed: number): void {
+    // Transient channels start every tick at zero, before the first stage.
+    this.resetGrowables(state);
     for (const stage of this.stages.list()) {
       this.measureStage(state, stage.id, () => stage.run({ state, elapsed, engine: this }));
     }
@@ -628,6 +640,7 @@ export class Engine {
     state.stats.movingAvgTime = state.stats.lastTicks.reduce((a, b) => a + b, 0) / state.stats.lastTicks.length;
   }
 
+  /** Clears every transient `persecDelta` (absent: nothing grows it this tick yet). */
   private resetGrowables(state: GameState): void {
     const growables = this.services.registry.getAllGrowables(state);
     for (const thing of growables) {

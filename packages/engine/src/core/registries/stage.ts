@@ -75,12 +75,14 @@ export class StageRegistry {
  * The tick pipeline: upgrade effects of stage 0, production, stage 1,
  * prestige effects, growth, stage 2, automation. The upgrade stages only apply
  * effects on transient `persecDelta` targets; effects on persistent paths are
- * folded at their point of read inside "Produce".
+ * folded at their point of read inside "Produce". The tick zeroes every
+ * transient channel before the first stage, so all three upgrade stages add
+ * to the same tick's deltas.
  */
 function builtInStages(): StageDef[] {
   return [
     { id: "Upgrades(0)", version: "1.0.0", priority: 100, run: (ctx) => ctx.engine.applyUpgrades(ctx.state, 0) },
-    { id: "Produce", version: "1.0.0", priority: 200, run: (ctx) => ctx.engine.computeProducers(ctx.state, ctx.elapsed) },
+    { id: "Produce", version: "1.0.0", priority: 200, run: (ctx) => ctx.engine.produce(ctx.state, ctx.elapsed) },
     { id: "Upgrades(1)", version: "1.0.0", priority: 300, run: (ctx) => ctx.engine.applyUpgrades(ctx.state, 1) },
     { id: "Prestiges", version: "1.0.0", priority: 400, run: (ctx) => ctx.engine.applyPrestiges(ctx.state) },
     { id: "Growth", version: "1.0.0", priority: 500, run: (ctx) => ctx.engine.applyGrowth(ctx.state, ctx.elapsed) },

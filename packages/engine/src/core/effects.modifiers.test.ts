@@ -280,6 +280,25 @@ describe("Transient-path effects (persecDelta) — unchanged from before", () =>
     // Linear growth over time (not exponential): amount = ticks * 8 * (16/1000)
     expect(getCurrencyAmount(state)).toBeCloseTo(50 * 8 * (16 / 1000), 9);
   });
+
+  it.each([0, 1] as const)("counts a persecDelta effect declared at stage %i in the same tick's production", (stage) => {
+    const state = makeStateWithPersecDeltaEffect();
+    state.upgrades[0]!.effects[0]!.stage = stage;
+    const engine = new Engine(16, { time: new MockTimeProvider(16) });
+
+    engine.advance(state, 16 * 10);
+    expect(getPersecDelta(state)).toBe(8);
+    expect(getCurrencyAmount(state)).toBeCloseTo(10 * 8 * (16 / 1000), 9);
+  });
+
+  it("computeProducers called outside a tick still recomputes from zero", () => {
+    const state = makeStateWithPersecDeltaEffect();
+    const engine = new Engine(16, { time: new MockTimeProvider(16) });
+
+    engine.computeProducers(state, 16);
+    engine.computeProducers(state, 16);
+    expect(getPersecDelta(state)).toBe(1);
+  });
 });
 
 describe("Modifier pipeline: custom effect types compose via the fold (addon-defined types, e.g. 'pow')", () => {

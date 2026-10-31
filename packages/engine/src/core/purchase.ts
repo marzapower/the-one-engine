@@ -1,4 +1,4 @@
-import type { Buyable, Effect, Producer, Upgrade } from "../models/base";
+import type { Buyable, Currency, Effect, Producer, Upgrade } from "../models/base";
 import type { Unlock } from "../models/base";
 import { N, NR, type Numerus } from "../nums";
 import type { GameState } from "../state";
@@ -14,7 +14,7 @@ export type PurchaseBlock = "unknown" | "maxed" | "locked" | "noPool" | "unaffor
  * Resolves the pool an entity's cost is paid FROM: a currency, or a
  * producer's unit stock (`amount`) — upgrades and producers may cost producer units.
  */
-export function findCostPool(state: GameState, code: string): { amount: Numerus } | undefined {
+export function findCostPool(state: GameState, code: string): Currency | Producer | undefined {
   return state.currencies.find((c) => c.code === code) ?? state.producers.find((p) => p.code === code);
 }
 
@@ -34,7 +34,7 @@ export function isUnlocked(state: GameState, entity: { unlock?: Unlock }): boole
 interface QuotedLine {
   currencyCode: string;
   cost: Numerus;
-  pool: { amount: Numerus } | undefined;
+  pool: Currency | Producer | undefined;
 }
 
 /**
@@ -67,10 +67,10 @@ function costBlock(lines: QuotedLine[]): "noPool" | "unaffordable" | null {
 }
 
 /** Subtracts every line from its pool. Call only after `costBlock` returned null, with the same lines. */
-function debit(lines: QuotedLine[]): void {
+function debit(engine: Engine, state: GameState, lines: QuotedLine[]): void {
   lines.forEach((line, index) => {
     if (index > 0 && N(line.cost).lte(0)) return;
-    line.pool!.amount = NR(N(line.pool!.amount).sub(N(line.cost)));
+    engine.services.adapter.setField(state, line.pool!, "amount", NR(N(line.pool!.amount).sub(N(line.cost))));
   });
 }
 
@@ -107,9 +107,9 @@ export function buyUpgrade(engine: Engine, state: GameState, code: string): bool
 
   const oldBought = N(upgrade.bought);
 
-  debit(lines);
-  upgrade.bought = NR(oldBought.add(1));
-  upgrade.amount = NR(N(upgrade.amount).add(1));
+  debit(engine, state, lines);
+  engine.services.adapter.setField(state, upgrade, "bought", NR(oldBought.add(1)));
+  engine.services.adapter.setField(state, upgrade, "amount", NR(N(upgrade.amount).add(1)));
 
   if (upgrade.grantOnPurchase) grantOnPurchase(engine, state, upgrade, oldBought);
   return true;
@@ -132,7 +132,7 @@ function grantOnPurchase(engine: Engine, state: GameState, upgrade: Upgrade, old
     if (!resolved) continue;
     for (const obj of resolved.objects) {
       const producer = obj as Producer;
-      producer.amount = NR(N(producer.amount).add(delta));
+      engine.services.adapter.setField(state, producer, "amount", NR(N(producer.amount).add(delta)));
     }
   }
 }
@@ -159,8 +159,8 @@ export function buyProducer(engine: Engine, state: GameState, code: string, amou
   const { block, lines } = producerCheck(engine, state, producer, amount);
   if (block !== null) return false;
 
-  debit(lines);
-  producer.bought = NR(N(producer.bought).add(amount));
-  producer.amount = NR(N(producer.amount).add(amount));
+  debit(engine, state, lines);
+  engine.services.adapter.setField(state, producer, "bought", NR(N(producer.bought).add(amount)));
+  engine.services.adapter.setField(state, producer, "amount", NR(N(producer.amount).add(amount)));
   return true;
 }

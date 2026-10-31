@@ -81,6 +81,7 @@ export type {
   EngineDependencies,
   MutationEvent,
   MutationType,
+  StockField,
   CompiledAccessor,
 } from "./core/di/types";
 export { DefaultTimeProvider, DefaultStateAdapter, DefaultEffectResolver, DefaultEntityRegistry, consoleLogger, silentLogger } from "./core/di/defaults";

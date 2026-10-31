@@ -70,8 +70,8 @@ export function applyPrestigeDrips(engine: Engine, state: GameState, elapsedMs: 
     const currency = engine.services.registry.getByCode(state, "currency", prestige.currencyCode) as Currency | undefined;
     if (!currency) continue;
 
-    currency.amount = NR(N(currency.amount).add(drip));
-    currency.earned = NR(N(currency.earned ?? 0).add(drip));
+    engine.services.adapter.setField(state, currency, "amount", NR(N(currency.amount).add(drip)));
+    engine.services.adapter.setField(state, currency, "earned", NR(N(currency.earned ?? 0).add(drip)));
   }
 }
 

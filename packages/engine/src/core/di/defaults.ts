@@ -4,7 +4,7 @@ import { Decimal, N, NR, type Numerus } from "../../nums";
 import type { GameState } from "../../state";
 import { computeGrowthFunction } from "../growth";
 import { resolveTargetCode } from "../target-select";
-import type { CompiledAccessor, EffectResolver, EngineServices, EntityRegistry, MutationEvent, StateAdapter, TimeProvider } from "./types";
+import type { CompiledAccessor, EffectResolver, EngineServices, EntityRegistry, MutationEvent, StateAdapter, StockField, TimeProvider } from "./types";
 
 export class DefaultTimeProvider implements TimeProvider {
   private tickLength: number;
@@ -152,6 +152,12 @@ export class DefaultStateAdapter implements StateAdapter {
     this.fire("after", { type: "incrementAmount", target: thing, value: delta });
   }
 
+  setField(_state: GameState, thing: Producer | Currency | Upgrade, field: StockField, value: Numerus): void {
+    this.fire("before", { type: "setField", target: thing, field, value });
+    (thing as Partial<Record<StockField, Numerus>>)[field] = value;
+    this.fire("after", { type: "setField", target: thing, field, value });
+  }
+
   resetForPrestige(state: GameState, prestigeCode: string): void {
     this.fire("before", { type: "resetForPrestige", value: prestigeCode });
     for (const thing of this.getAllThings(state)) {
@@ -193,6 +199,15 @@ export class DefaultEffectResolver implements EffectResolver {
 
     if (effectDef.allowedStages && !effectDef.allowedStages.includes(effect.stage)) {
       services.logger.warn(`Effect type "${effect.type}" used in stage ${effect.stage}, but allowedStages is [${effectDef.allowedStages.join(", ")}]. Applying anyway.`);
+    }
+
+    // A transient channel cleared at the start of the tick is absent, not 0:
+    // it starts from 0 so an effect that runs before production still counts.
+    if (resolved.key === "persecDelta") {
+      for (const obj of resolved.objects) {
+        const thing = obj as Producer | Currency;
+        if (thing.persecDelta == null) services.adapter.setPersecDelta(state, thing, ZERO);
+      }
     }
 
     const updater = (previous: Decimal) => effectDef.apply(previous, value);

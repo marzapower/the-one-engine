@@ -20,16 +20,26 @@ export interface Logger {
   error(...args: unknown[]): void;
 }
 
-export type MutationType = "setTargetValue" | "setValues" | "addPersecDelta" | "setPersecDelta" | "incrementAmount" | "resetForPrestige";
+export type MutationType = "setTargetValue" | "setValues" | "addPersecDelta" | "setPersecDelta" | "incrementAmount" | "setField" | "resetForPrestige";
+
+/** The stock fields `setField` writes: what is owned, what was bought, what was earned over time. */
+export type StockField = "amount" | "bought" | "earned";
 
 export interface MutationEvent {
   type: MutationType;
   target?: Target | Producer | Currency | Upgrade;
   value?: unknown;
+  /** For `setField`: which field was written; `value` is its new value. */
+  field?: StockField;
   timestamp: number;
 }
 
-/** Every write the engine performs on the state goes through this seam. */
+/**
+ * Every write the engine performs on amounts, bought counts and earned totals
+ * goes through this seam: production, purchases, grants, prestiges, drips.
+ * Derived per-tick fields (`persecEffective`, `state.stats`) and the prestige
+ * run clocks are written directly.
+ */
 export interface StateAdapter {
   getAllThings(state: GameState): (Producer | Currency | Upgrade)[];
   getThing(state: GameState, kind: "producer" | "currency" | "upgrade", code: string): Producer | Currency | Upgrade | undefined;
@@ -43,6 +53,7 @@ export interface StateAdapter {
   addPersecDelta(state: GameState, thing: Producer | Currency, delta: Numerus): void;
   setPersecDelta(state: GameState, thing: Producer | Currency, value: Numerus | undefined): void;
   incrementAmount(state: GameState, thing: Producer | Currency, delta: Numerus): void;
+  setField(state: GameState, thing: Producer | Currency | Upgrade, field: StockField, value: Numerus): void;
   resetForPrestige(state: GameState, prestigeCode: string): void;
   onBeforeMutation?: (event: MutationEvent) => void;
   onAfterMutation?: (event: MutationEvent) => void;

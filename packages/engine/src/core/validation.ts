@@ -49,10 +49,10 @@ export interface DefinitionIssue {
   range?: DefinitionRange;
 }
 
-/** One finding of the shared state walker. Warnings use `code: "suspiciousCoeff"` and never fail validation. */
+/** One finding of the shared state walker. Warnings use the warning codes and never fail validation. */
 export interface WalkIssue {
   severity: "error" | "warning";
-  code: DefinitionIssueCode | "suspiciousCoeff";
+  code: DefinitionIssueCode | "suspiciousCoeff" | "lateTransientEffect";
   path: (string | number)[];
   message: string;
   range?: DefinitionRange;
@@ -279,7 +279,18 @@ export function walkState(
 
   state.upgrades.forEach((upgrade, index) => {
     const path = ["upgrades", index];
-    upgrade.effects.forEach((effect, effectIndex) => validateEffect(effect, `Upgrade ${upgrade.code}`, [...path, "effects", effectIndex]));
+    upgrade.effects.forEach((effect, effectIndex) => {
+      validateEffect(effect, `Upgrade ${upgrade.code}`, [...path, "effects", effectIndex]);
+      // In the built-in stage order "Upgrades(2)" runs after "Growth", and the next tick starts from zero.
+      if (effect.stage === 2 && isTransientTargetPath(effect.target.path)) {
+        issues.push({
+          severity: "warning",
+          code: "lateTransientEffect",
+          path: [...path, "effects", effectIndex, "stage"],
+          message: `Upgrade ${upgrade.code}: with the built-in stage order, a persecDelta effect at stage 2 runs after growth and reaches no amount; use stage 0 or 1`,
+        });
+      }
+    });
 
     validateGrowthFunction(upgrade.scaling, `upgrade ${upgrade.code} scaling`, [...path, "scaling"]);
     validateExtraCosts(upgrade, `Upgrade ${upgrade.code}`, path);
